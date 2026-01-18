@@ -58,19 +58,32 @@ DATABASE_URL="file:./dev.db"
 
 4. Deploy!
 
-### Replit
+### Render
 
-1. Import from GitHub
+Render supports persistent disks, making it ideal for SQLite databases.
 
-2. Add to `.replit` file:
-```
-run = "npm run dev"
-```
+1. Push your code to GitHub
 
-3. Set environment variable in Secrets:
-   - `DATABASE_URL`: `file:./prisma/dev.db`
+2. Go to [render.com](https://render.com) → **New** → **Web Service**
 
-4. Click Run
+3. Connect your GitHub repo and configure:
+   - **Root Directory**: Leave blank (or `.` if your code is in root)
+   - **Build Command**: `npm install && npx prisma generate && npx prisma migrate deploy && npm run build`
+   - **Start Command**: `npm start`
+
+4. Add environment variables (in the **Environment** section):
+   - `DATABASE_URL` = `file:/data/workout.db`
+   - `NODE_ENV` = `production`
+
+5. Add a persistent disk (scroll down to **Disks** section):
+   - Click **Add Disk**
+   - **Name**: `workout-data`
+   - **Mount Path**: `/data`
+   - **Size**: 1 GB
+
+6. Click **Create Web Service**
+
+The disk persists your SQLite database across deploys and restarts. Render's free tier includes 1 disk.
 
 ## Pasting Plans from Phone
 

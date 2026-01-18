@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.0",
+    "@prisma/adapter-libsql": "^7.2.0",
     "@prisma/client": "^5.22.0",
     "better-sqlite3": "^12.6.2",
     "date-fns": "^4.1.0",
