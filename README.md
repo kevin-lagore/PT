@@ -1,36 +1,139 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Workout Log
 
-## Getting Started
+A lightweight, personal, web-based workout logging app with XP gamification. Optimized for fast mobile logging.
 
-First, run the development server:
+## Features
 
+- **XP Gamification**: Earn XP for every workout
+  - Gym: 1 XP per set
+  - Running: 3 XP per km
+  - Circuits: 15 XP per circuit
+  - Activity: Manual XP entry
+
+- **Weekly Plan Import**: Paste Markdown tables from chat apps
+- **Fast Logging**: Log workouts in under 10 seconds
+- **Progress Tracking**: Weekly XP trends and type breakdown
+
+## Quick Start
+
+### Local Development
+
+1. Install dependencies:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Set up the database:
+```bash
+npx prisma migrate dev
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Start the dev server:
+```bash
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+4. Open [http://localhost:3000](http://localhost:3000)
 
-## Learn More
+### Environment Variables
 
-To learn more about Next.js, take a look at the following resources:
+Create a `.env` file (already exists with defaults):
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+DATABASE_URL="file:./dev.db"
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Deployment
 
-## Deploy on Vercel
+### Vercel (Recommended)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Push your code to GitHub
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+2. Import to Vercel:
+   - Connect your GitHub repo
+   - Vercel auto-detects Next.js
+
+3. Add environment variable:
+   - `DATABASE_URL`: For production, use a cloud database like Turso or PlanetScale
+
+4. Deploy!
+
+### Replit
+
+1. Import from GitHub
+
+2. Add to `.replit` file:
+```
+run = "npm run dev"
+```
+
+3. Set environment variable in Secrets:
+   - `DATABASE_URL`: `file:./prisma/dev.db`
+
+4. Click Run
+
+## Pasting Plans from Phone
+
+The primary way to create a plan is pasting a Markdown table. Here's the exact format:
+
+```markdown
+| Day | Type | Notes | Exercise / Activity | Sets | Reps / Time |
+|-----|------|-------|---------------------|------|-------------|
+| Monday | Gym | Push Day - 60kg bench | Bench Press | 4 | 8-10 |
+| | | 40kg | Overhead Press | 3 | 8-12 |
+| Tuesday | Run | Easy pace | Steady Run | 1 | 5 km |
+```
+
+### Rules
+
+- Headers must match exactly: `Day | Type | Notes | Exercise / Activity | Sets | Reps / Time`
+- Empty cells inherit from the row above
+- First row must have all values filled
+- Use "Load Example" button to see a complete plan
+
+### Tips for Mobile
+
+1. Copy the table from your chat app (ChatGPT, Claude, etc.)
+2. Open the Plans tab
+3. Long-press the textarea and Paste
+4. Tap "Parse & Preview" to validate
+5. Tap "Save Week" to save
+
+## Project Structure
+
+```
+src/
+├── app/
+│   ├── api/
+│   │   ├── logs/route.ts      # Log CRUD
+│   │   ├── plans/route.ts     # Plan CRUD
+│   │   ├── progress/route.ts  # Progress data
+│   │   └── week/route.ts      # Current week data
+│   ├── plans/page.tsx         # Plans screen
+│   ├── progress/page.tsx      # Progress screen
+│   ├── layout.tsx
+│   └── page.tsx               # This Week screen
+├── components/
+│   ├── FastLogButton.tsx      # Floating + button
+│   ├── Navigation.tsx         # Bottom nav
+│   ├── ThisWeek.tsx          # Main logging UI
+│   └── XPToast.tsx           # "+X XP" toast
+└── lib/
+    ├── db.ts                  # Prisma client
+    ├── markdown-parser.ts     # Table parser
+    └── types.ts               # Shared types
+```
+
+## Database Schema
+
+- **WeekPlan**: Weekly plan metadata
+- **PlanRow**: Individual exercises in a plan
+- **LogEntry**: Logged workouts with stored XP
+
+## Tech Stack
+
+- Next.js 15 (App Router)
+- TypeScript
+- Tailwind CSS
+- Prisma + SQLite
+- Lucide React (icons)

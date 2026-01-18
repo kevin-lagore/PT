@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model WeekPlan {
+  id            String    @id @default(cuid())
+  weekStartDate DateTime  // Monday of the week
+  createdAt     DateTime  @default(now())
+  rows          PlanRow[]
+}
+
+model PlanRow {
+  id           String     @id @default(cuid())
+  weekPlanId   String
+  weekPlan     WeekPlan   @relation(fields: [weekPlanId], references: [id], onDelete: Cascade)
+  day          String     // Monday, Tuesday, etc.
+  type         String     // Gym, Run, Circuit, Activity
+  notes        String
+  exercise     String     // Exercise / Activity name
+  setsText     String     // e.g., "4" or "3-4"
+  repsTimeText String     // e.g., "8-12" or "30 min"
+  sortOrder    Int
+  logEntries   LogEntry[]
+}
+
+model LogEntry {
+  id                 String   @id @default(cuid())
+  date               DateTime
+  type               String   // Gym, Run, Circuit, Activity
+  exerciseOrActivity String
+  setsCompleted      Int?
+  km                 Float?
+  circuitsCompleted  Int?
+  xp                 Int      // Always stored, never recomputed
+  notes              String?
+  linkedPlanRowId    String?
+  linkedPlanRow      PlanRow? @relation(fields: [linkedPlanRowId], references: [id], onDelete: SetNull)
+  createdAt          DateTime @default(now())
+}
