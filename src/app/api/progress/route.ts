@@ -40,5 +40,42 @@ export async function GET() {
     })
   }
 
-  return NextResponse.json({ weeks })
+  // Get daily XP for the last 60 days (enough for 28-day rolling average with buffer)
+  const sixtyDaysAgo = new Date(now)
+  sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 59)
+  sixtyDaysAgo.setHours(0, 0, 0, 0)
+
+  const dailyLogs = await prisma.logEntry.findMany({
+    where: {
+      date: {
+        gte: sixtyDaysAgo,
+        lte: now
+      }
+    },
+    select: {
+      date: true,
+      xp: true
+    }
+  })
+
+  // Aggregate XP by date
+  const xpByDate: Record<string, number> = {}
+  for (const log of dailyLogs) {
+    const dateStr = formatDate(log.date)
+    xpByDate[dateStr] = (xpByDate[dateStr] || 0) + log.xp
+  }
+
+  // Build array of daily XP for last 60 days
+  const dailyXP: { date: string; xp: number }[] = []
+  for (let i = 59; i >= 0; i--) {
+    const d = new Date(now)
+    d.setDate(d.getDate() - i)
+    const dateStr = formatDate(d)
+    dailyXP.push({
+      date: dateStr,
+      xp: xpByDate[dateStr] || 0
+    })
+  }
+
+  return NextResponse.json({ weeks, dailyXP })
 }
