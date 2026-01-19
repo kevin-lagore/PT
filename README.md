@@ -45,45 +45,70 @@ DATABASE_URL="file:./dev.db"
 
 ## Deployment
 
-### Vercel (Recommended)
+### Vercel + Turso (Recommended - Free)
+
+This setup uses Turso (cloud SQLite) with Vercel's free tier.
+
+**Step 1: Create Turso Database**
+
+1. Sign up at [turso.tech](https://turso.tech) (free tier: 9GB storage, 500 databases)
+
+2. Install Turso CLI and login:
+```bash
+# macOS/Linux
+curl -sSfL https://get.tur.so/install.sh | bash
+turso auth login
+
+# Windows - use WSL or download from GitHub releases
+```
+
+3. Create database and get credentials:
+```bash
+turso db create workout-log
+turso db show workout-log --url        # Copy this URL
+turso db tokens create workout-log     # Copy this token
+```
+
+4. Push your schema to Turso:
+```bash
+turso db shell workout-log < prisma/migrations/*/migration.sql
+```
+
+**Step 2: Deploy to Vercel**
 
 1. Push your code to GitHub
 
-2. Import to Vercel:
-   - Connect your GitHub repo
-   - Vercel auto-detects Next.js
+2. Import to Vercel at [vercel.com/new](https://vercel.com/new)
 
-3. Add environment variable:
-   - `DATABASE_URL`: For production, use a cloud database like Turso or PlanetScale
+3. Add environment variables:
+   - `TURSO_DATABASE_URL` = `libsql://workout-log-yourusername.turso.io`
+   - `TURSO_AUTH_TOKEN` = `your-token-here`
+   - `DATABASE_URL` = `file:./dev.db` (needed for build)
 
 4. Deploy!
 
-### Render
+### Render (Paid - $7/mo)
 
-Render supports persistent disks, making it ideal for SQLite databases.
+Render's Starter tier supports persistent disks for SQLite.
 
 1. Push your code to GitHub
 
 2. Go to [render.com](https://render.com) → **New** → **Web Service**
 
-3. Connect your GitHub repo and configure:
-   - **Root Directory**: Leave blank (or `.` if your code is in root)
+3. Select **Starter** plan ($7/mo) - required for persistent disks
+
+4. Configure:
    - **Build Command**: `npm install && npx prisma generate && npx prisma migrate deploy && npm run build`
    - **Start Command**: `npm start`
 
-4. Add environment variables (in the **Environment** section):
+5. Add environment variables:
    - `DATABASE_URL` = `file:/data/workout.db`
-   - `NODE_ENV` = `production`
 
-5. Add a persistent disk (scroll down to **Disks** section):
-   - Click **Add Disk**
-   - **Name**: `workout-data`
+6. Add a persistent disk:
    - **Mount Path**: `/data`
    - **Size**: 1 GB
 
-6. Click **Create Web Service**
-
-The disk persists your SQLite database across deploys and restarts. Render's free tier includes 1 disk.
+7. Deploy!
 
 ## Pasting Plans from Phone
 
