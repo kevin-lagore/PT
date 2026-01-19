@@ -8,6 +8,8 @@ interface FastLogButtonProps {
     type: string
     exerciseOrActivity: string
     setsCompleted?: number
+    reps?: number
+    weight?: number
     km?: number
     circuitsCompleted?: number
     manualXP?: number
@@ -23,6 +25,8 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
   // Form state
   const [exercise, setExercise] = useState('')
   const [sets, setSets] = useState('')
+  const [reps, setReps] = useState('')
+  const [weight, setWeight] = useState('')
   const [km, setKm] = useState('')
   const [circuits, setCircuits] = useState('')
   const [xp, setXp] = useState('')
@@ -32,6 +36,8 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
     setLogType(null)
     setExercise('')
     setSets('')
+    setReps('')
+    setWeight('')
     setKm('')
     setCircuits('')
     setXp('')
@@ -54,8 +60,10 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
         notes: notes || undefined,
       }
 
-      if (logType === 'gym' && sets) {
-        data.setsCompleted = parseInt(sets)
+      if (logType === 'gym') {
+        data.setsCompleted = parseInt(sets) || 1
+        if (reps) data.reps = parseInt(reps)
+        if (weight) data.weight = parseFloat(weight)
       } else if (logType === 'run' && km) {
         data.km = parseFloat(km)
       } else if (logType === 'circuit' && circuits) {
@@ -83,15 +91,18 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
       {/* FAB */}
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-20 right-4 w-14 h-14 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center transition-transform active:scale-95 z-40"
+        className="fixed bottom-24 right-4 w-16 h-16 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center transition-transform active:scale-95 z-40"
       >
-        <Plus className="w-7 h-7" />
+        <Plus className="w-8 h-8" />
       </button>
 
       {/* Modal */}
       {isOpen && (
-        <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center">
-          <div className="bg-zinc-900 w-full sm:max-w-md sm:rounded-xl rounded-t-xl p-4 pb-8 max-h-[80vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center" onClick={handleClose}>
+          <div
+            className="bg-zinc-900 w-full sm:max-w-md sm:rounded-xl rounded-t-xl p-4 pb-safe max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg font-semibold text-white">
                 {logType ? `Log ${logType.charAt(0).toUpperCase() + logType.slice(1)}` : 'Quick Log'}
@@ -132,18 +143,45 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
                 />
 
                 {logType === 'gym' && (
-                  <div>
-                    <label className="block text-zinc-400 text-sm mb-1">Sets completed</label>
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      placeholder="e.g., 4"
-                      value={sets}
-                      onChange={(e) => setSets(e.target.value)}
-                      className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white text-2xl text-center"
-                      autoFocus
-                    />
-                    <p className="text-zinc-500 text-sm mt-1">= {sets ? parseInt(sets) : 0} XP</p>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-zinc-400 text-xs mb-1">Sets</label>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          placeholder="4"
+                          value={sets}
+                          onChange={(e) => setSets(e.target.value)}
+                          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-3 text-white text-xl text-center"
+                          autoFocus
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-zinc-400 text-xs mb-1">Reps</label>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          placeholder="10"
+                          value={reps}
+                          onChange={(e) => setReps(e.target.value)}
+                          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-3 text-white text-xl text-center"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-zinc-400 text-xs mb-1">Weight (kg)</label>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.5"
+                          placeholder="50"
+                          value={weight}
+                          onChange={(e) => setWeight(e.target.value)}
+                          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-3 text-white text-xl text-center"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-zinc-500 text-sm text-center">= {sets ? parseInt(sets) : 1} XP (1 XP per set)</p>
                   </div>
                 )}
 

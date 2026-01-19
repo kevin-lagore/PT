@@ -13,6 +13,8 @@ export interface PlanRowWithLogs {
     id: string
     date: string
     setsCompleted: number | null
+    reps: number | null
+    weight: number | null
     km: number | null
     circuitsCompleted: number | null
     xp: number

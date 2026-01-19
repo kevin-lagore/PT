@@ -4,7 +4,18 @@ import { useState, useEffect, useCallback } from 'react'
 import { DAYS, getDayOfWeek } from '@/lib/types'
 import { FastLogButton } from './FastLogButton'
 import { XPToast } from './XPToast'
-import { Check, CheckCheck, ChevronDown, ChevronUp } from 'lucide-react'
+import { Check, CheckCheck, ChevronDown, ChevronUp, X } from 'lucide-react'
+
+interface LogEntry {
+  id: string
+  date: string
+  setsCompleted: number | null
+  reps: number | null
+  weight: number | null
+  km: number | null
+  circuitsCompleted: number | null
+  xp: number
+}
 
 interface PlanRow {
   id: string
@@ -14,13 +25,7 @@ interface PlanRow {
   exercise: string
   setsText: string
   repsTimeText: string
-  logEntries: {
-    id: string
-    setsCompleted: number | null
-    km: number | null
-    circuitsCompleted: number | null
-    xp: number
-  }[]
+  logEntries: LogEntry[]
 }
 
 interface WeekData {
@@ -57,6 +62,8 @@ export function ThisWeek() {
     type: string
     exerciseOrActivity: string
     setsCompleted?: number
+    reps?: number
+    weight?: number
     km?: number
     circuitsCompleted?: number
     manualXP?: number
@@ -97,6 +104,34 @@ export function ThisWeek() {
     } finally {
       setLoggingRow(null)
     }
+  }
+
+  const handleRowLogWithDetails = async (row: PlanRow, data: { sets: number; reps?: number; weight?: number }) => {
+    setLoggingRow(row.id)
+    try {
+      const res = await fetch('/api/logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: row.type,
+          exerciseOrActivity: row.exercise,
+          linkedPlanRowId: row.id,
+          setsCompleted: data.sets,
+          reps: data.reps,
+          weight: data.weight,
+        }),
+      })
+      const result = await res.json()
+      setToastXP(result.xp)
+      fetchData()
+    } finally {
+      setLoggingRow(null)
+    }
+  }
+
+  const handleDeleteLog = async (logId: string) => {
+    await fetch(`/api/logs?id=${logId}`, { method: 'DELETE' })
+    fetchData()
   }
 
   const toggleDay = (day: string) => {
@@ -206,6 +241,8 @@ export function ThisWeek() {
                         key={row.id}
                         row={row}
                         onLog={handleRowLog}
+                        onLogWithDetails={handleRowLogWithDetails}
+                        onDeleteLog={handleDeleteLog}
                         isLogging={loggingRow === row.id}
                       />
                     ))}
@@ -226,14 +263,22 @@ export function ThisWeek() {
 function ExerciseRow({
   row,
   onLog,
+  onLogWithDetails,
+  onDeleteLog,
   isLogging,
 }: {
   row: PlanRow
   onLog: (row: PlanRow, value: number) => void
+  onLogWithDetails: (row: PlanRow, data: { sets: number; reps?: number; weight?: number }) => void
+  onDeleteLog: (logId: string) => void
   isLogging: boolean
 }) {
   const [inputValue, setInputValue] = useState('')
   const [showInput, setShowInput] = useState(false)
+  const [showDetails, setShowDetails] = useState(false)
+  const [sets, setSets] = useState('1')
+  const [reps, setReps] = useState('')
+  const [weight, setWeight] = useState('')
 
   const type = row.type.toLowerCase()
   const totalLogged = row.logEntries.reduce((sum, log) => {
@@ -248,9 +293,7 @@ function ExerciseRow({
 
   const handleQuickLog = () => {
     if (type === 'gym') {
-      // Log remaining sets or 1 set
-      const remaining = Math.max(1, targetSets - totalLogged)
-      onLog(row, remaining)
+      setShowDetails(true)
     } else {
       setShowInput(true)
     }
@@ -263,6 +306,19 @@ function ExerciseRow({
       setInputValue('')
       setShowInput(false)
     }
+  }
+
+  const handleDetailedSubmit = () => {
+    const setsNum = parseInt(sets) || 1
+    onLogWithDetails(row, {
+      sets: setsNum,
+      reps: reps ? parseInt(reps) : undefined,
+      weight: weight ? parseFloat(weight) : undefined,
+    })
+    setSets('1')
+    setReps('')
+    setWeight('')
+    setShowDetails(false)
   }
 
   const getInputPlaceholder = () => {
@@ -280,9 +336,22 @@ function ExerciseRow({
     return ''
   }
 
+  const formatLogEntry = (log: LogEntry) => {
+    if (type === 'gym') {
+      const parts = []
+      if (log.setsCompleted) parts.push(`${log.setsCompleted}×`)
+      if (log.reps) parts.push(`${log.reps}`)
+      if (log.weight) parts.push(`@ ${log.weight}kg`)
+      return parts.join(' ') || `${log.setsCompleted} sets`
+    }
+    if (type === 'run') return `${log.km} km`
+    if (type === 'circuit') return `${log.circuitsCompleted} circuits`
+    return `${log.xp} XP`
+  }
+
   return (
     <div className="bg-zinc-800/50 rounded-lg p-3">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-medium text-white truncate">{row.exercise}</span>
@@ -295,7 +364,7 @@ function ExerciseRow({
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-sm text-zinc-400">{getProgressText()}</span>
+          <span className="text-xs text-zinc-500">{getProgressText()}</span>
 
           {showInput ? (
             <div className="flex items-center gap-1">
@@ -305,14 +374,14 @@ function ExerciseRow({
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 placeholder={getInputPlaceholder()}
-                className="w-16 bg-zinc-700 border border-zinc-600 rounded px-2 py-1 text-white text-sm text-center"
+                className="w-14 bg-zinc-700 border border-zinc-600 rounded px-2 py-1.5 text-white text-sm text-center"
                 autoFocus
                 onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
               />
               <button
                 onClick={handleSubmit}
                 disabled={isLogging}
-                className="bg-emerald-500 hover:bg-emerald-600 text-white rounded p-1"
+                className="bg-emerald-500 hover:bg-emerald-600 text-white rounded p-1.5"
               >
                 <Check className="w-4 h-4" />
               </button>
@@ -321,17 +390,94 @@ function ExerciseRow({
             <button
               onClick={handleQuickLog}
               disabled={isLogging}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors active:scale-95 ${
                 isComplete
                   ? 'bg-emerald-500/20 text-emerald-400'
                   : 'bg-emerald-500 hover:bg-emerald-600 text-white'
               }`}
             >
-              {isLogging ? '...' : type === 'gym' ? '+Set' : 'Log'}
+              {isLogging ? '...' : '+Log'}
             </button>
           )}
         </div>
       </div>
+
+      {/* Detailed gym logging form */}
+      {showDetails && type === 'gym' && (
+        <div className="mt-3 pt-3 border-t border-zinc-700">
+          <div className="grid grid-cols-3 gap-2 mb-2">
+            <div>
+              <label className="block text-zinc-500 text-xs mb-1">Sets</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                value={sets}
+                onChange={(e) => setSets(e.target.value)}
+                className="w-full bg-zinc-700 border border-zinc-600 rounded px-2 py-2 text-white text-center"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="block text-zinc-500 text-xs mb-1">Reps</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                placeholder="10"
+                value={reps}
+                onChange={(e) => setReps(e.target.value)}
+                className="w-full bg-zinc-700 border border-zinc-600 rounded px-2 py-2 text-white text-center"
+              />
+            </div>
+            <div>
+              <label className="block text-zinc-500 text-xs mb-1">kg</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.5"
+                placeholder="50"
+                value={weight}
+                onChange={(e) => setWeight(e.target.value)}
+                className="w-full bg-zinc-700 border border-zinc-600 rounded px-2 py-2 text-white text-center"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowDetails(false)}
+              className="flex-1 py-2 text-zinc-400 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDetailedSubmit}
+              disabled={isLogging}
+              className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg py-2 text-sm font-medium active:scale-95"
+            >
+              {isLogging ? '...' : 'Log'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Show logged entries */}
+      {row.logEntries.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-zinc-700/50 space-y-1">
+          {row.logEntries.map((log) => (
+            <div key={log.id} className="flex items-center justify-between text-sm">
+              <span className="text-zinc-400">{formatLogEntry(log)}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-emerald-400 text-xs">+{log.xp} XP</span>
+                <button
+                  onClick={() => onDeleteLog(log.id)}
+                  className="text-zinc-500 hover:text-red-400 p-1"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

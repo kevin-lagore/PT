@@ -35,6 +35,8 @@ model LogEntry {
   type               String   // Gym, Run, Circuit, Activity
   exerciseOrActivity String
   setsCompleted      Int?
+  reps               Int?
+  weight             Float?   // Weight in kg
   km                 Float?
   circuitsCompleted  Int?
   xp                 Int      // Always stored, never recomputed

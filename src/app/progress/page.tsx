@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { Download } from 'lucide-react'
 
 interface WeekData {
   weekStart: string
@@ -57,9 +58,22 @@ export default function ProgressPage() {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   }
 
+  const handleExport = () => {
+    window.location.href = '/api/export'
+  }
+
   return (
     <div className="pb-24 px-4 py-4">
-      <h1 className="text-xl font-bold text-white mb-4">Progress</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-bold text-white">Progress</h1>
+        <button
+          onClick={handleExport}
+          className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-2 rounded-lg text-sm font-medium active:scale-95 transition-transform"
+        >
+          <Download className="w-4 h-4" />
+          Export CSV
+        </button>
+      </div>
 
       {/* Total XP */}
       <div className="bg-zinc-900 rounded-lg p-4 mb-6">
