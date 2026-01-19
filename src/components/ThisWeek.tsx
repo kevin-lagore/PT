@@ -106,7 +106,7 @@ export function ThisWeek() {
     }
   }
 
-  const handleRowLogWithDetails = async (row: PlanRow, data: { sets: number; reps?: number; weight?: number }) => {
+  const handleLogSet = async (row: PlanRow, data: { reps?: number; weight?: number }) => {
     setLoggingRow(row.id)
     try {
       const res = await fetch('/api/logs', {
@@ -116,7 +116,7 @@ export function ThisWeek() {
           type: row.type,
           exerciseOrActivity: row.exercise,
           linkedPlanRowId: row.id,
-          setsCompleted: data.sets,
+          setsCompleted: 1, // Each log entry = 1 set
           reps: data.reps,
           weight: data.weight,
         }),
@@ -241,7 +241,7 @@ export function ThisWeek() {
                         key={row.id}
                         row={row}
                         onLog={handleRowLog}
-                        onLogWithDetails={handleRowLogWithDetails}
+                        onLogSet={handleLogSet}
                         onDeleteLog={handleDeleteLog}
                         isLogging={loggingRow === row.id}
                       />
@@ -263,37 +263,39 @@ export function ThisWeek() {
 function ExerciseRow({
   row,
   onLog,
-  onLogWithDetails,
+  onLogSet,
   onDeleteLog,
   isLogging,
 }: {
   row: PlanRow
   onLog: (row: PlanRow, value: number) => void
-  onLogWithDetails: (row: PlanRow, data: { sets: number; reps?: number; weight?: number }) => void
+  onLogSet: (row: PlanRow, data: { reps?: number; weight?: number }) => void
   onDeleteLog: (logId: string) => void
   isLogging: boolean
 }) {
   const [inputValue, setInputValue] = useState('')
   const [showInput, setShowInput] = useState(false)
-  const [showDetails, setShowDetails] = useState(false)
-  const [sets, setSets] = useState('1')
+  const [showSetForm, setShowSetForm] = useState(false)
   const [reps, setReps] = useState('')
   const [weight, setWeight] = useState('')
 
   const type = row.type.toLowerCase()
+
+  // For gym: count log entries (each entry = 1 set)
+  const totalSets = type === 'gym' ? row.logEntries.length : 0
   const totalLogged = row.logEntries.reduce((sum, log) => {
-    if (type === 'gym') return sum + (log.setsCompleted || 0)
+    if (type === 'gym') return sum + (log.setsCompleted || 1)
     if (type === 'run') return sum + (log.km || 0)
     if (type === 'circuit') return sum + (log.circuitsCompleted || 0)
     return sum + log.xp
   }, 0)
 
   const targetSets = parseInt(row.setsText) || 0
-  const isComplete = type === 'gym' && totalLogged >= targetSets && targetSets > 0
+  const isComplete = type === 'gym' && totalSets >= targetSets && targetSets > 0
 
   const handleQuickLog = () => {
     if (type === 'gym') {
-      setShowDetails(true)
+      setShowSetForm(true)
     } else {
       setShowInput(true)
     }
@@ -308,17 +310,17 @@ function ExerciseRow({
     }
   }
 
-  const handleDetailedSubmit = () => {
-    const setsNum = parseInt(sets) || 1
-    onLogWithDetails(row, {
-      sets: setsNum,
+  const handleLogSet = (addAnother: boolean) => {
+    onLogSet(row, {
       reps: reps ? parseInt(reps) : undefined,
       weight: weight ? parseFloat(weight) : undefined,
     })
-    setSets('1')
+    // Keep weight, clear reps for next set
     setReps('')
-    setWeight('')
-    setShowDetails(false)
+    if (!addAnother) {
+      setShowSetForm(false)
+      setWeight('')
+    }
   }
 
   const getInputPlaceholder = () => {
@@ -329,20 +331,20 @@ function ExerciseRow({
   }
 
   const getProgressText = () => {
-    if (type === 'gym') return `${totalLogged}/${targetSets} sets`
+    if (type === 'gym') return `${totalSets}/${targetSets} sets`
     if (type === 'run') return totalLogged > 0 ? `${totalLogged} km` : row.repsTimeText
     if (type === 'circuit') return totalLogged > 0 ? `${totalLogged} circuits` : row.setsText
     if (type === 'activity') return totalLogged > 0 ? `${totalLogged} XP` : row.repsTimeText
     return ''
   }
 
-  const formatLogEntry = (log: LogEntry) => {
+  const formatLogEntry = (log: LogEntry, index: number) => {
     if (type === 'gym') {
-      const parts = []
-      if (log.setsCompleted) parts.push(`${log.setsCompleted}×`)
-      if (log.reps) parts.push(`${log.reps}`)
-      if (log.weight) parts.push(`@ ${log.weight}kg`)
-      return parts.join(' ') || `${log.setsCompleted} sets`
+      const parts = [`Set ${index + 1}:`]
+      if (log.reps) parts.push(`${log.reps} reps`)
+      if (log.weight) parts.push(`× ${log.weight}kg`)
+      if (!log.reps && !log.weight) parts.push('logged')
+      return parts.join(' ')
     }
     if (type === 'run') return `${log.km} km`
     if (type === 'circuit') return `${log.circuitsCompleted} circuits`
@@ -396,64 +398,64 @@ function ExerciseRow({
                   : 'bg-emerald-500 hover:bg-emerald-600 text-white'
               }`}
             >
-              {isLogging ? '...' : '+Log'}
+              {isLogging ? '...' : '+Set'}
             </button>
           )}
         </div>
       </div>
 
-      {/* Detailed gym logging form */}
-      {showDetails && type === 'gym' && (
+      {/* Log individual set form for gym */}
+      {showSetForm && type === 'gym' && (
         <div className="mt-3 pt-3 border-t border-zinc-700">
-          <div className="grid grid-cols-3 gap-2 mb-2">
-            <div>
-              <label className="block text-zinc-500 text-xs mb-1">Sets</label>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={sets}
-                onChange={(e) => setSets(e.target.value)}
-                className="w-full bg-zinc-700 border border-zinc-600 rounded px-2 py-2 text-white text-center"
-                autoFocus
-              />
-            </div>
-            <div>
-              <label className="block text-zinc-500 text-xs mb-1">Reps</label>
-              <input
-                type="number"
-                inputMode="numeric"
-                placeholder="10"
-                value={reps}
-                onChange={(e) => setReps(e.target.value)}
-                className="w-full bg-zinc-700 border border-zinc-600 rounded px-2 py-2 text-white text-center"
-              />
-            </div>
-            <div>
-              <label className="block text-zinc-500 text-xs mb-1">kg</label>
+          <div className="text-xs text-zinc-400 mb-2">Log Set {totalSets + 1}</div>
+          <div className="flex items-center gap-2 mb-3">
+            <input
+              type="number"
+              inputMode="numeric"
+              placeholder="Reps"
+              value={reps}
+              onChange={(e) => setReps(e.target.value)}
+              className="flex-1 bg-zinc-700 border border-zinc-600 rounded px-3 py-2 text-white text-center"
+              autoFocus
+            />
+            <span className="text-zinc-500">×</span>
+            <div className="flex-1 relative">
               <input
                 type="number"
                 inputMode="decimal"
                 step="0.5"
-                placeholder="50"
+                placeholder="Weight"
                 value={weight}
                 onChange={(e) => setWeight(e.target.value)}
-                className="w-full bg-zinc-700 border border-zinc-600 rounded px-2 py-2 text-white text-center"
+                className="w-full bg-zinc-700 border border-zinc-600 rounded px-3 py-2 text-white text-center pr-8"
               />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 text-sm">kg</span>
             </div>
           </div>
           <div className="flex gap-2">
             <button
-              onClick={() => setShowDetails(false)}
-              className="flex-1 py-2 text-zinc-400 text-sm"
+              onClick={() => {
+                setShowSetForm(false)
+                setReps('')
+                setWeight('')
+              }}
+              className="px-3 py-2 text-zinc-400 text-sm"
             >
               Cancel
             </button>
             <button
-              onClick={handleDetailedSubmit}
+              onClick={() => handleLogSet(true)}
+              disabled={isLogging}
+              className="flex-1 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg py-2 text-sm font-medium active:scale-95"
+            >
+              {isLogging ? '...' : 'Log + Another'}
+            </button>
+            <button
+              onClick={() => handleLogSet(false)}
               disabled={isLogging}
               className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg py-2 text-sm font-medium active:scale-95"
             >
-              {isLogging ? '...' : 'Log'}
+              {isLogging ? '...' : 'Done'}
             </button>
           </div>
         </div>
@@ -462,9 +464,9 @@ function ExerciseRow({
       {/* Show logged entries */}
       {row.logEntries.length > 0 && (
         <div className="mt-2 pt-2 border-t border-zinc-700/50 space-y-1">
-          {row.logEntries.map((log) => (
+          {row.logEntries.map((log, index) => (
             <div key={log.id} className="flex items-center justify-between text-sm">
-              <span className="text-zinc-400">{formatLogEntry(log)}</span>
+              <span className="text-zinc-400">{formatLogEntry(log, index)}</span>
               <div className="flex items-center gap-2">
                 <span className="text-emerald-400 text-xs">+{log.xp} XP</span>
                 <button

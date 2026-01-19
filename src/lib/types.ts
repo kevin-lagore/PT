@@ -35,8 +35,9 @@ export function calculateXP(type: string, data: {
 }): number {
   const normalizedType = type.toLowerCase()
 
-  if (normalizedType === 'gym' && data.setsCompleted) {
-    return data.setsCompleted // 1 XP per set
+  if (normalizedType === 'gym') {
+    // Default to 1 set if not specified, 1 XP per set
+    return data.setsCompleted !== undefined && data.setsCompleted > 0 ? data.setsCompleted : 1
   }
 
   if (normalizedType === 'run' && data.km) {
