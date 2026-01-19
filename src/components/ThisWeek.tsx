@@ -279,22 +279,26 @@ function ExerciseRow({
   const [reps, setReps] = useState('')
   const [weight, setWeight] = useState('')
 
-  const type = row.type.toLowerCase()
+  const typeLower = row.type.toLowerCase()
+  const isGym = typeLower.startsWith('gym')
+  const isRun = typeLower.startsWith('run')
+  const isCircuit = typeLower.includes('circuit')
+  const isActivity = typeLower.startsWith('activity')
 
   // For gym: count log entries (each entry = 1 set)
-  const totalSets = type === 'gym' ? row.logEntries.length : 0
+  const totalSets = isGym ? row.logEntries.length : 0
   const totalLogged = row.logEntries.reduce((sum, log) => {
-    if (type === 'gym') return sum + (log.setsCompleted || 1)
-    if (type === 'run') return sum + (log.km || 0)
-    if (type === 'circuit') return sum + (log.circuitsCompleted || 0)
+    if (isGym) return sum + (log.setsCompleted || 1)
+    if (isRun) return sum + (log.km || 0)
+    if (isCircuit) return sum + (log.circuitsCompleted || 0)
     return sum + log.xp
   }, 0)
 
   const targetSets = parseInt(row.setsText) || 0
-  const isComplete = type === 'gym' && totalSets >= targetSets && targetSets > 0
+  const isComplete = isGym && totalSets >= targetSets && targetSets > 0
 
   const handleQuickLog = () => {
-    if (type === 'gym') {
+    if (isGym) {
       setShowSetForm(true)
     } else {
       setShowInput(true)
@@ -324,30 +328,30 @@ function ExerciseRow({
   }
 
   const getInputPlaceholder = () => {
-    if (type === 'run') return 'km'
-    if (type === 'circuit') return 'circuits'
-    if (type === 'activity') return 'XP'
+    if (isRun) return 'km'
+    if (isCircuit) return 'circuits'
+    if (isActivity) return 'XP'
     return 'sets'
   }
 
   const getProgressText = () => {
-    if (type === 'gym') return `${totalSets}/${targetSets} sets`
-    if (type === 'run') return totalLogged > 0 ? `${totalLogged} km` : row.repsTimeText
-    if (type === 'circuit') return totalLogged > 0 ? `${totalLogged} circuits` : row.setsText
-    if (type === 'activity') return totalLogged > 0 ? `${totalLogged} XP` : row.repsTimeText
+    if (isGym) return `${totalSets}/${targetSets} sets`
+    if (isRun) return totalLogged > 0 ? `${totalLogged} km` : row.repsTimeText
+    if (isCircuit) return totalLogged > 0 ? `${totalLogged} circuits` : row.setsText
+    if (isActivity) return totalLogged > 0 ? `${totalLogged} XP` : row.repsTimeText
     return ''
   }
 
   const formatLogEntry = (log: LogEntry, index: number) => {
-    if (type === 'gym') {
+    if (isGym) {
       const parts = [`Set ${index + 1}:`]
       if (log.reps) parts.push(`${log.reps} reps`)
       if (log.weight) parts.push(`× ${log.weight}kg`)
       if (!log.reps && !log.weight) parts.push('logged')
       return parts.join(' ')
     }
-    if (type === 'run') return `${log.km} km`
-    if (type === 'circuit') return `${log.circuitsCompleted} circuits`
+    if (isRun) return `${log.km} km`
+    if (isCircuit) return `${log.circuitsCompleted} circuits`
     return `${log.xp} XP`
   }
 
@@ -405,7 +409,7 @@ function ExerciseRow({
       </div>
 
       {/* Log individual set form for gym */}
-      {showSetForm && type === 'gym' && (
+      {showSetForm && isGym && (
         <div className="mt-3 pt-3 border-t border-zinc-700">
           <div className="text-xs text-zinc-400 mb-2">Log Set {totalSets + 1}</div>
           <div className="flex items-center gap-2 mb-3">

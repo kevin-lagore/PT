@@ -11,7 +11,10 @@
       "Bash(curl:*)",
       "Bash(npx tsc:*)",
       "Bash(node -e:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push)"
     ]
   }
 }

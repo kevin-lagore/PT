@@ -33,22 +33,22 @@ export function calculateXP(type: string, data: {
   circuitsCompleted?: number
   manualXP?: number
 }): number {
-  const normalizedType = type.toLowerCase()
+  const typeLower = type.toLowerCase()
 
-  if (normalizedType === 'gym') {
+  if (typeLower.startsWith('gym')) {
     // Default to 1 set if not specified, 1 XP per set
     return data.setsCompleted !== undefined && data.setsCompleted > 0 ? data.setsCompleted : 1
   }
 
-  if (normalizedType === 'run' && data.km) {
+  if (typeLower.startsWith('run') && data.km) {
     return Math.round(data.km * 3) // 3 XP per km
   }
 
-  if (normalizedType === 'circuit' && data.circuitsCompleted) {
+  if (typeLower.includes('circuit') && data.circuitsCompleted) {
     return data.circuitsCompleted * 15 // 15 XP per circuit
   }
 
-  if (normalizedType === 'activity' && data.manualXP !== undefined) {
+  if (typeLower.startsWith('activity') && data.manualXP !== undefined) {
     return data.manualXP
   }
 
