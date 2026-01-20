@@ -89,14 +89,14 @@ export function ThisWeek() {
         linkedPlanRowId: row.id,
       }
 
-      const type = row.type.toLowerCase()
-      if (type === 'gym') {
+      const typeLower = row.type.toLowerCase()
+      if (typeLower.startsWith('gym')) {
         logData.setsCompleted = value
-      } else if (type === 'run') {
+      } else if (typeLower.startsWith('run')) {
         logData.km = value
-      } else if (type === 'circuit') {
+      } else if (typeLower.includes('circuit')) {
         logData.circuitsCompleted = value
-      } else if (type === 'activity') {
+      } else if (typeLower.startsWith('activity')) {
         logData.manualXP = value
       }
 
