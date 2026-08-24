@@ -112,19 +112,19 @@ export function parseMarkdownTable(markdown: string): ParseResult {
       repsTime: cells[5] || (previousRow?.repsTime ?? ''),
     }
 
-    // Validate first row has all values
+    // Validate first row has all required values.
+    // Notes is OPTIONAL: an empty Notes cell defaults to '' on the first row and
+    // inherits-or-stays-empty on later rows — never an error.
     if (dataRowNumber === 1) {
       if (!row.day) errors.push('Row 1: Day is required in the first row')
       if (!row.type) errors.push('Row 1: Type is required in the first row')
-      if (!row.notes) errors.push('Row 1: Notes is required in the first row')
       if (!row.exercise) errors.push('Row 1: Exercise / Activity is required in the first row')
       if (!row.sets) errors.push('Row 1: Sets is required in the first row')
       if (!row.repsTime) errors.push('Row 1: Reps / Time is required in the first row')
     } else {
-      // Validate inheritance worked
+      // Validate inheritance worked (Notes excluded — it may legitimately be empty)
       if (!row.day) errors.push(`Row ${dataRowNumber}: missing Day value and cannot inherit`)
       if (!row.type) errors.push(`Row ${dataRowNumber}: missing Type value and cannot inherit`)
-      if (!row.notes) errors.push(`Row ${dataRowNumber}: missing Notes value and cannot inherit`)
       if (!row.exercise) errors.push(`Row ${dataRowNumber}: missing Exercise / Activity value and cannot inherit`)
       if (!row.sets) errors.push(`Row ${dataRowNumber}: missing Sets value and cannot inherit`)
       if (!row.repsTime) errors.push(`Row ${dataRowNumber}: missing Reps / Time value and cannot inherit`)
