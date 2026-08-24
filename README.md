@@ -84,6 +84,9 @@ turso db shell workout-log < prisma/migrations/*/migration.sql
    - `TURSO_DATABASE_URL` = `libsql://workout-log-yourusername.turso.io`
    - `TURSO_AUTH_TOKEN` = `your-token-here`
    - `DATABASE_URL` = `file:./dev.db` (needed for build)
+   - `TZ` = `Europe/London` (your local timezone — **required** so streaks,
+     session days and weekly goals bucket logs by *your* calendar day; Vercel
+     functions otherwise run in UTC and evening logs can drift a day)
 
 4. Deploy!
 

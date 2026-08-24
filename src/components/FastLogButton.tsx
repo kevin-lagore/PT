@@ -1,28 +1,116 @@
 'use client'
 
 import { useState } from 'react'
-import { Plus, X, Dumbbell, Timer, Zap, Activity } from 'lucide-react'
+import { Plus, X, Dumbbell, Timer, Zap, Activity, RotateCcw } from 'lucide-react'
+import { calculateXP, normalizeWorkoutType, type WorkoutType } from '@/lib/types'
+
+interface QuickLogData {
+  type: string
+  exerciseOrActivity: string
+  setsCompleted?: number
+  reps?: number
+  weight?: number
+  km?: number
+  circuitsCompleted?: number
+  manualXP?: number
+  notes?: string
+}
 
 interface FastLogButtonProps {
-  onLog: (data: {
-    type: string
-    exerciseOrActivity: string
-    setsCompleted?: number
-    reps?: number
-    weight?: number
-    km?: number
-    circuitsCompleted?: number
-    manualXP?: number
-    notes?: string
-  }) => Promise<void>
+  onLog: (data: QuickLogData) => Promise<void>
+}
+
+// Raw form field values for one quick log. Persisted as-is to localStorage so
+// the "Again: ..." shortcut can rebuild and resubmit the exact same log.
+interface QuickLogFields {
+  type: WorkoutType
+  exercise: string
+  sets: string
+  reps: string
+  weight: string
+  km: string
+  circuits: string
+  xp: string
+  notes: string
+}
+
+const STORAGE_KEY = 'pt:lastQuickLog'
+
+function readLastQuickLog(): QuickLogFields | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<Record<keyof QuickLogFields, unknown>>
+    const type = normalizeWorkoutType(String(parsed.type ?? ''))
+    if (!type) return null
+    const str = (v: unknown) => (typeof v === 'string' ? v : '')
+    return {
+      type,
+      exercise: str(parsed.exercise),
+      sets: str(parsed.sets),
+      reps: str(parsed.reps),
+      weight: str(parsed.weight),
+      km: str(parsed.km),
+      circuits: str(parsed.circuits),
+      xp: str(parsed.xp),
+      notes: str(parsed.notes),
+    }
+  } catch {
+    return null
+  }
+}
+
+function saveLastQuickLog(fields: QuickLogFields) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(fields))
+  } catch {
+    // localStorage unavailable (private mode etc.) — quick-repeat just won't remember
+  }
+}
+
+// Parse the string form fields into the onLog payload (same rules the old
+// inline submit used: gym defaults to 1 set; other numbers only when present).
+function buildLogData(f: QuickLogFields): QuickLogData {
+  const data: QuickLogData = {
+    type: f.type,
+    exerciseOrActivity: f.exercise.trim() || f.type,
+    notes: f.notes || undefined,
+  }
+  if (f.type === 'Gym') {
+    data.setsCompleted = parseInt(f.sets) || 1
+    if (f.reps) data.reps = parseInt(f.reps)
+    if (f.weight) data.weight = parseFloat(f.weight)
+  } else if (f.type === 'Run' && f.km) {
+    data.km = parseFloat(f.km)
+  } else if (f.type === 'Circuit' && f.circuits) {
+    data.circuitsCompleted = parseInt(f.circuits)
+  } else if (f.type === 'Activity' && f.xp) {
+    data.manualXP = parseInt(f.xp)
+  }
+  return data
+}
+
+// Short human label for the quick-repeat chip, e.g. "Run 5 km" or "Bench 4x10 @ 50kg".
+function describeQuickLog(f: QuickLogFields): string {
+  const name = f.exercise.trim() || f.type
+  if (f.type === 'Gym') {
+    const setCount = parseInt(f.sets) || 1
+    const detail = f.reps ? `${setCount}x${f.reps}` : `${setCount} set${setCount === 1 ? '' : 's'}`
+    return `${name} ${detail}${f.weight ? ` @ ${f.weight}kg` : ''}`
+  }
+  if (f.type === 'Run') return f.km ? `${name} ${f.km} km` : name
+  if (f.type === 'Circuit') return f.circuits ? `${name} ${f.circuits} circuits` : name
+  return name
 }
 
 export function FastLogButton({ onLog }: FastLogButtonProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [logType, setLogType] = useState<'gym' | 'run' | 'circuit' | 'activity' | null>(null)
+  const [logType, setLogType] = useState<WorkoutType | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [lastLog, setLastLog] = useState<QuickLogFields | null>(null)
 
-  // Form state
+  // Form state (strings, parsed at submit)
   const [exercise, setExercise] = useState('')
   const [sets, setSets] = useState('')
   const [reps, setReps] = useState('')
@@ -32,8 +120,14 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
   const [xp, setXp] = useState('')
   const [notes, setNotes] = useState('')
 
+  const currentFields: QuickLogFields | null = logType
+    ? { type: logType, exercise, sets, reps, weight, km, circuits, xp, notes }
+    : null
+  const previewXP = currentFields ? calculateXP(currentFields.type, buildLogData(currentFields)) : 0
+
   const reset = () => {
     setLogType(null)
+    setError(null)
     setExercise('')
     setSets('')
     setReps('')
@@ -44,53 +138,52 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
     setNotes('')
   }
 
+  const handleOpen = () => {
+    setLastLog(readLastQuickLog())
+    setIsOpen(true)
+  }
+
   const handleClose = () => {
     setIsOpen(false)
     reset()
   }
 
-  const handleSubmit = async () => {
-    if (!logType) return
-
+  // Shared submit path: on failure keep the sheet (and form values) open and
+  // show an inline error; on success remember the log for quick-repeat.
+  const submitLog = async (fields: QuickLogFields) => {
     setLoading(true)
+    setError(null)
     try {
-      const data: Parameters<typeof onLog>[0] = {
-        type: logType.charAt(0).toUpperCase() + logType.slice(1),
-        exerciseOrActivity: exercise || logType,
-        notes: notes || undefined,
-      }
-
-      if (logType === 'gym') {
-        data.setsCompleted = parseInt(sets) || 1
-        if (reps) data.reps = parseInt(reps)
-        if (weight) data.weight = parseFloat(weight)
-      } else if (logType === 'run' && km) {
-        data.km = parseFloat(km)
-      } else if (logType === 'circuit' && circuits) {
-        data.circuitsCompleted = parseInt(circuits)
-      } else if (logType === 'activity' && xp) {
-        data.manualXP = parseInt(xp)
-      }
-
-      await onLog(data)
+      await onLog(buildLogData(fields))
+      saveLastQuickLog(fields)
       handleClose()
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : 'Could not save')
     } finally {
       setLoading(false)
     }
   }
 
+  const handleSubmit = () => {
+    if (currentFields) void submitLog(currentFields)
+  }
+
+  const handleQuickRepeat = () => {
+    if (lastLog) void submitLog(lastLog)
+  }
+
   const typeButtons = [
-    { key: 'gym', label: 'Gym', icon: Dumbbell, color: 'bg-blue-600' },
-    { key: 'run', label: 'Run', icon: Timer, color: 'bg-green-600' },
-    { key: 'circuit', label: 'Circuit', icon: Zap, color: 'bg-orange-600' },
-    { key: 'activity', label: 'Activity', icon: Activity, color: 'bg-purple-600' },
+    { key: 'Gym', icon: Dumbbell, color: 'bg-blue-600' },
+    { key: 'Run', icon: Timer, color: 'bg-green-600' },
+    { key: 'Circuit', icon: Zap, color: 'bg-orange-600' },
+    { key: 'Activity', icon: Activity, color: 'bg-purple-600' },
   ] as const
 
   return (
     <>
       {/* FAB */}
       <button
-        onClick={() => setIsOpen(true)}
+        onClick={handleOpen}
         className="fixed bottom-24 right-4 w-16 h-16 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full shadow-lg flex items-center justify-center transition-transform active:scale-95 z-40"
       >
         <Plus className="w-8 h-8" />
@@ -105,25 +198,51 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
           >
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg font-semibold text-white">
-                {logType ? `Log ${logType.charAt(0).toUpperCase() + logType.slice(1)}` : 'Quick Log'}
+                {logType ? `Log ${logType}` : 'Quick Log'}
               </h2>
               <button onClick={handleClose} className="text-zinc-400 hover:text-white p-1">
                 <X className="w-6 h-6" />
               </button>
             </div>
 
+            {error && (
+              <div className="bg-red-900/30 border border-red-800 rounded-lg px-4 py-3 mb-4">
+                <p className="text-red-300 text-sm">{error}</p>
+              </div>
+            )}
+
             {!logType ? (
-              <div className="grid grid-cols-2 gap-3">
-                {typeButtons.map(({ key, label, icon: Icon, color }) => (
+              <div className="space-y-3">
+                {lastLog && (
                   <button
-                    key={key}
-                    onClick={() => setLogType(key)}
-                    className={`${color} text-white rounded-lg p-4 flex flex-col items-center gap-2 active:scale-95 transition-transform`}
+                    onClick={handleQuickRepeat}
+                    disabled={loading}
+                    className="w-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg px-4 py-3 flex items-center justify-center gap-2 font-medium active:scale-95 transition-transform disabled:opacity-50"
                   >
-                    <Icon className="w-8 h-8" />
-                    <span className="font-medium">{label}</span>
+                    <RotateCcw className="w-4 h-4 shrink-0" />
+                    <span>
+                      {loading
+                        ? 'Logging...'
+                        : `Again: ${describeQuickLog(lastLog)} (+${calculateXP(lastLog.type, buildLogData(lastLog))} XP)`}
+                    </span>
                   </button>
-                ))}
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  {typeButtons.map(({ key, icon: Icon, color }) => (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        setError(null)
+                        setLogType(key)
+                      }}
+                      disabled={loading}
+                      className={`${color} text-white rounded-lg p-4 flex flex-col items-center gap-2 active:scale-95 transition-transform disabled:opacity-50`}
+                    >
+                      <Icon className="w-8 h-8" />
+                      <span className="font-medium">{key}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="space-y-4">
@@ -142,7 +261,7 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
                   className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white placeholder-zinc-500"
                 />
 
-                {logType === 'gym' && (
+                {logType === 'Gym' && (
                   <div className="space-y-3">
                     <div className="grid grid-cols-3 gap-2">
                       <div>
@@ -181,11 +300,11 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
                         />
                       </div>
                     </div>
-                    <p className="text-zinc-500 text-sm text-center">= {sets ? parseInt(sets) : 1} XP (1 XP per set)</p>
+                    <p className="text-zinc-500 text-sm text-center">= {previewXP} XP (1 XP per set)</p>
                   </div>
                 )}
 
-                {logType === 'run' && (
+                {logType === 'Run' && (
                   <div>
                     <label className="block text-zinc-400 text-sm mb-1">Kilometers</label>
                     <input
@@ -198,11 +317,11 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
                       className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white text-2xl text-center"
                       autoFocus
                     />
-                    <p className="text-zinc-500 text-sm mt-1">= {km ? Math.round(parseFloat(km) * 3) : 0} XP</p>
+                    <p className="text-zinc-500 text-sm mt-1">= {previewXP} XP</p>
                   </div>
                 )}
 
-                {logType === 'circuit' && (
+                {logType === 'Circuit' && (
                   <div>
                     <label className="block text-zinc-400 text-sm mb-1">Circuits completed</label>
                     <input
@@ -214,11 +333,11 @@ export function FastLogButton({ onLog }: FastLogButtonProps) {
                       className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white text-2xl text-center"
                       autoFocus
                     />
-                    <p className="text-zinc-500 text-sm mt-1">= {circuits ? parseInt(circuits) * 15 : 0} XP</p>
+                    <p className="text-zinc-500 text-sm mt-1">= {previewXP} XP</p>
                   </div>
                 )}
 
-                {logType === 'activity' && (
+                {logType === 'Activity' && (
                   <div>
                     <label className="block text-zinc-400 text-sm mb-1">XP (manual entry)</label>
                     <input
