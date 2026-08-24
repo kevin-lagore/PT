@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { formatDate } from '@/lib/types'
 
 export async function GET() {
   // Get all logs with their linked plan rows
@@ -43,7 +44,7 @@ export async function GET() {
     const dayName = date.toLocaleDateString('en-US', { weekday: 'long' })
 
     return [
-      date.toISOString().split('T')[0],
+      formatDate(date), // LOCAL yyyy-mm-dd, matching the app's local-day bucketing
       plan?.day || dayName,
       log.type,
       log.exerciseOrActivity,
@@ -72,7 +73,7 @@ export async function GET() {
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv',
-      'Content-Disposition': `attachment; filename="workout-logs-${new Date().toISOString().split('T')[0]}.csv"`
+      'Content-Disposition': `attachment; filename="workout-logs-${formatDate(new Date())}.csv"`
     }
   })
 }
