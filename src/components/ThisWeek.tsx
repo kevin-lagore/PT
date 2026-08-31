@@ -76,6 +76,23 @@ function agoText(daysAgo: number): string {
   return `${daysAgo}d ago`
 }
 
+// Day labels are SLOTS, not calendar promises: a Wednesday session done on
+// Monday still counts. Returns the distinct actual weekdays (short names, in
+// week order) on which this day-group's entries were logged, excluding the
+// group's own label — non-empty means work landed on a different day.
+function loggedOffDayNames(dayLabel: string, dayRows: PlanRowWithLogs[]): string[] {
+  const actualDays = new Set<string>()
+  for (const row of dayRows) {
+    for (const log of row.logEntries) {
+      const actual = getDayOfWeek(new Date(log.date))
+      if (actual !== dayLabel) actualDays.add(actual)
+    }
+  }
+  return [...actualDays]
+    .sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b))
+    .map((d) => d.slice(0, 3))
+}
+
 // Compact description of a prior gym session's sets:
 // uniform -> '3x8 @ 60kg', same weight -> '60kg x 8,8,7', mixed -> per-set list.
 function describeSets(sets: LastEntry['sets']): string | null {
@@ -112,7 +129,7 @@ export function ThisWeek() {
   const [pendingUndo, setPendingUndo] = useState<UndoPayload | null>(null)
   const [suppressedIds, setSuppressedIds] = useState<Set<string>>(new Set())
   const [loggingRow, setLoggingRow] = useState<string | null>(null)
-  const [planAction, setPlanAction] = useState<'comeback' | 'copy' | null>(null)
+  const [planAction, setPlanAction] = useState<'comeback' | 'copy' | 'generate' | null>(null)
 
   // Today-first: start with every day collapsed EXCEPT today (client-local).
   // On weekends everything starts collapsed (the recap card leads instead).
@@ -368,6 +385,44 @@ export function ThisWeek() {
     }
   }
 
+  // Generate a week from history and save it in one tap: POST the preview
+  // endpoint (which never saves), then persist its rows via POST /api/plans.
+  const handleGenerateFromHistory = async () => {
+    setPlanAction('generate')
+    try {
+      const genRes = await fetch('/api/plans/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      if (genRes.status === 404) {
+        setToast({ kind: 'error', message: 'No history yet — start with a template' })
+        return
+      }
+      if (!genRes.ok) {
+        setToast({ kind: 'error', message: 'Could not generate plan — try again' })
+        return
+      }
+      const generated: { rows: Record<string, unknown>[] } = await genRes.json()
+      const saveRes = await fetch('/api/plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: generated.rows }),
+      })
+      if (!saveRes.ok) {
+        setToast({ kind: 'error', message: 'Could not save plan — try again' })
+        return
+      }
+      setToast({ kind: 'action', message: 'Plan generated from your history.' })
+      await fetchData()
+    } catch (error) {
+      console.error('Failed to generate plan:', error)
+      setToast({ kind: 'error', message: 'Could not generate plan — try again' })
+    } finally {
+      setPlanAction(null)
+    }
+  }
+
   const toggleDay = (day: string) => {
     setCollapsedDays((prev) => {
       const next = new Set(prev)
@@ -479,6 +534,13 @@ export function ThisWeek() {
               {planAction === 'comeback' ? 'Creating...' : 'Start Comeback Week'}
             </button>
             <button
+              onClick={handleGenerateFromHistory}
+              disabled={planAction !== null}
+              className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-zinc-700 text-white font-medium px-6 py-4 rounded-lg active:scale-95 transition-transform"
+            >
+              {planAction === 'generate' ? 'Generating...' : 'Generate from history'}
+            </button>
+            <button
               onClick={handleRepeatLastWeek}
               disabled={planAction !== null}
               className="w-full bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-zinc-700 text-white font-medium px-6 py-4 rounded-lg active:scale-95 transition-transform"
@@ -520,6 +582,7 @@ export function ThisWeek() {
 
             const isCollapsed = collapsedDays.has(day)
             const dayTotalXP = xpByDay[day] || 0
+            const offDayNames = loggedOffDayNames(day, dayRows)
 
             return (
               <div key={day} className={isToday ? 'bg-zinc-900/50' : ''}>
@@ -542,6 +605,14 @@ export function ThisWeek() {
                     {isCollapsed && (
                       <span className="text-xs text-zinc-500 bg-zinc-800 px-2 py-0.5 rounded-full">
                         {dayRows.length} exercise{dayRows.length === 1 ? '' : 's'}
+                      </span>
+                    )}
+                    {offDayNames.length > 0 && (
+                      <span
+                        title="Logged on a different day — still counts"
+                        className="text-xs text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded-full"
+                      >
+                        {'✓ ' + offDayNames.join(', ')}
                       </span>
                     )}
                     {dayTotalXP > 0 && (

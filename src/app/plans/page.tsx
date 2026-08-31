@@ -5,7 +5,18 @@ import { useSearchParams } from 'next/navigation'
 import { parseMarkdownTable, rowsToMarkdown, rowsToCSV, EXAMPLE_PLAN, ParsedRow } from '@/lib/markdown-parser'
 import { TEMPLATES, WeekTemplate } from '@/lib/templates'
 import { PlanTable } from '@/components/PlanTable'
-import { Copy, Check, Download, Upload, FileText, RotateCcw } from 'lucide-react'
+import { Copy, Check, Download, Upload, FileText, RotateCcw, Sparkles } from 'lucide-react'
+
+// Row shape returned by POST /api/plans/generate — the WeekPlanRow field names
+// (setsText/repsTimeText), which POST /api/plans { rows } accepts verbatim.
+interface GeneratedPlanRow {
+  day: string
+  type: string
+  notes: string
+  exercise: string
+  setsText: string
+  repsTimeText: string
+}
 
 // Distinct session days per template, derived by actually parsing each
 // template's markdown (computed once at module load).
@@ -48,8 +59,14 @@ function PlansPageContent() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [savingGenerated, setSavingGenerated] = useState(false)
+  const [generated, setGenerated] = useState<GeneratedPlanRow[] | null>(null)
+  const [generatedNotes, setGeneratedNotes] = useState<string[]>([])
+  const [generateErrors, setGenerateErrors] = useState<string[]>([])
 
   const previewRef = useRef<HTMLDivElement | null>(null)
+  const generatedRef = useRef<HTMLDivElement | null>(null)
   const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const appliedDeepLink = useRef(false)
 
@@ -219,6 +236,70 @@ function PlansPageContent() {
     }
   }
 
+  // Preview-only: /api/plans/generate never saves. The rows are shown via
+  // PlanTable and only persisted when the user taps Save Generated Week.
+  const handleGenerate = async () => {
+    setGenerating(true)
+    setGenerateErrors([])
+    try {
+      const res = await fetch('/api/plans/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setGenerated(data.rows ?? [])
+        setGeneratedNotes(data.basedOn?.notes ?? [])
+        // Wait a tick for the preview to render, then bring it into view.
+        setTimeout(() => {
+          generatedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 100)
+      } else {
+        const data = await res.json().catch(() => null)
+        setGenerateErrors(data?.errors || ['Failed to generate a week'])
+        setGenerated(null)
+        setGeneratedNotes([])
+      }
+    } catch {
+      setGenerateErrors(['Network error — could not generate a week'])
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  // Save the generated rows via the rows-body branch of POST /api/plans (which
+  // validates and canonicalizes types) — NEVER through the markdown textarea,
+  // where empty Notes cells would wrongly inherit the previous row's note on
+  // re-parse.
+  const handleSaveGenerated = async () => {
+    if (!generated || !confirmReplace()) return
+    setSavingGenerated(true)
+    setGenerateErrors([])
+    try {
+      const res = await fetch('/api/plans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: generated }),
+      })
+
+      if (res.ok) {
+        setGenerated(null)
+        setGeneratedNotes([])
+        showSuccess('Generated week saved')
+        await fetchCurrentPlan()
+      } else {
+        const data = await res.json().catch(() => null)
+        setGenerateErrors(data?.errors || ['Failed to save the generated week'])
+      }
+    } catch {
+      setGenerateErrors(['Network error — could not save the generated week'])
+    } finally {
+      setSavingGenerated(false)
+    }
+  }
+
   const handleCopyMarkdown = async () => {
     if (currentPlan) {
       try {
@@ -300,6 +381,64 @@ function PlansPageContent() {
           </div>
         )
       )}
+
+      {/* Generate next week — the primary action when there's history to build
+          from. Always rendered; without history the API 404s into the error box. */}
+      <div className="mb-6">
+        <button
+          onClick={handleGenerate}
+          disabled={generating}
+          className="w-full flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-700 text-white font-medium py-3 rounded-lg transition active:scale-95"
+        >
+          <Sparkles className="w-4 h-4" />
+          {generating ? 'Generating...' : 'Generate next week'}
+        </button>
+        <p className="text-xs text-zinc-500 mt-1">
+          Builds a week from your last plan and logs, with progression applied.
+        </p>
+
+        {generateErrors.length > 0 && (
+          <div className="mt-2 bg-red-900/30 border border-red-800 rounded-lg p-3">
+            <p className="text-red-400 font-medium text-sm mb-2">Errors:</p>
+            <ul className="text-red-300 text-sm space-y-1">
+              {generateErrors.map((error, i) => (
+                <li key={i}>{error}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Generated preview — its own section, distinct from the paste preview */}
+        {generated && generated.length > 0 && (
+          <div ref={generatedRef} className="mt-3 space-y-3 scroll-mt-4">
+            <h3 className="text-sm font-medium text-zinc-400">Generated preview</h3>
+            <PlanTable
+              rows={generated.map((r) => ({
+                day: r.day,
+                type: r.type,
+                notes: r.notes,
+                exercise: r.exercise,
+                sets: r.setsText,
+                repsTime: r.repsTimeText,
+              }))}
+            />
+            {generatedNotes.length > 0 && (
+              <ul className="text-xs text-zinc-500 space-y-1">
+                {generatedNotes.map((note, i) => (
+                  <li key={i}>{note}</li>
+                ))}
+              </ul>
+            )}
+            <button
+              onClick={handleSaveGenerated}
+              disabled={savingGenerated}
+              className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-700 text-white font-medium py-3 rounded-lg transition-colors active:scale-95"
+            >
+              {savingGenerated ? 'Saving...' : 'Save Generated Week'}
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Templates — the primary path */}
       <div className="mb-6">
