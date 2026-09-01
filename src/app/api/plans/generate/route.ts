@@ -42,11 +42,14 @@ export async function POST(request: NextRequest) {
   const historyStart = new Date(monday)
   historyStart.setDate(historyStart.getDate() - 90)
 
-  const [sourcePlan, historyLogs] = await Promise.all([
-    // Source structure: the most recent plan before the target week.
-    prisma.weekPlan.findFirst({
+  const [recentPlans, historyLogs] = await Promise.all([
+    // The last 3 plans before the target week, newest first. The first one is
+    // the source structure; all of them feed the generator's rotation rules
+    // (main lifts rotate only after a finished 3-week block).
+    prisma.weekPlan.findMany({
       where: { weekStartDate: { lt: monday } },
       orderBy: { weekStartDate: 'desc' },
+      take: 3,
       include: {
         rows: {
           orderBy: { sortOrder: 'asc' }
@@ -69,6 +72,8 @@ export async function POST(request: NextRequest) {
     })
   ])
 
+  const sourcePlan = recentPlans[0]
+
   if (sourcePlan) {
     const sourceMonday = new Date(sourcePlan.weekStartDate)
     const sourceSunday = new Date(sourceMonday)
@@ -82,16 +87,23 @@ export async function POST(request: NextRequest) {
       select: { date: true, type: true }
     })
 
-    const sourceRows = sourcePlan.rows.map(row => ({
-      day: row.day,
-      type: row.type,
-      notes: row.notes,
-      exercise: row.exercise,
-      setsText: row.setsText,
-      repsTimeText: row.repsTimeText
-    }))
+    // Rows of the recent plans (newest first) as plain GenRow arrays; index 0
+    // doubles as the source structure.
+    const recentPlanRows = recentPlans.map(plan =>
+      plan.rows.map(row => ({
+        day: row.day,
+        type: row.type,
+        notes: row.notes,
+        exercise: row.exercise,
+        setsText: row.setsText,
+        repsTimeText: row.repsTimeText
+      }))
+    )
 
-    const result = generateWeekRows(sourceRows, historyLogs, sourceWeekLogs)
+    const result = generateWeekRows(recentPlanRows[0], historyLogs, sourceWeekLogs, {
+      targetWeekStartYmd: formatDate(monday),
+      recentPlanRows
+    })
 
     return NextResponse.json({
       rows: result.rows,
@@ -111,7 +123,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ errors: ['No workout history to generate from'] }, { status: 404 })
   }
 
-  const result = generateWeekRows(reconstructRowsFromLogs(recentLogs), historyLogs, [])
+  // No saved plans exist here, so recentPlanRows is empty — the generator
+  // keeps this reconstruction path rotation-free.
+  const result = generateWeekRows(reconstructRowsFromLogs(recentLogs), historyLogs, [], {
+    targetWeekStartYmd: formatDate(monday),
+    recentPlanRows: []
+  })
 
   return NextResponse.json({
     rows: result.rows,
