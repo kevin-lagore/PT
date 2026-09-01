@@ -113,6 +113,35 @@ Render's Starter tier supports persistent disks for SQLite.
 
 7. Deploy!
 
+## Strava Sync
+
+Runs and other activities can be pulled straight from Strava instead of logging them by hand.
+
+**Step 1: Create a Strava API app**
+
+1. Go to [strava.com/settings/api](https://www.strava.com/settings/api) and create an app
+2. Set **Authorization Callback Domain** to your Vercel domain (e.g. `workout-log-yourusername.vercel.app`). For local testing use `localhost`
+3. Copy the **Client ID** and **Client Secret**
+
+**Step 2: Set environment variables**
+
+Locally in `.env` and on Vercel (Project Settings → Environment Variables):
+
+```
+STRAVA_CLIENT_ID=your-client-id
+STRAVA_CLIENT_SECRET=your-client-secret
+```
+
+**Step 3: Connect**
+
+Visit `/api/strava/auth` once (e.g. `https://your-app.vercel.app/api/strava/auth`) and authorize the app. You'll be redirected back with the connection stored — after that, the sync control appears in the This Week header.
+
+Notes:
+
+- Runs (incl. trail and virtual runs) import as `Run` entries with distance and XP (3 XP/km), linked to this week's plan row when one matches
+- Other activities of 15+ moving minutes import as `Activity` entries (1 XP per 3 moving minutes); shorter ones are skipped
+- Already-imported activities and runs you logged manually on the same day (within 1 km) are skipped automatically
+
 ## Pasting Plans from Phone
 
 The primary way to create a plan is pasting a Markdown table. Here's the exact format:

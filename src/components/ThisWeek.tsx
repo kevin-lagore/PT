@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { DAYS, getDayOfWeek, normalizeWorkoutType } from '@/lib/types'
 import type { LastEntry, PlanRowWithLogs, PRInfo, ToastMessage, WeekApiResponse } from '@/lib/types'
@@ -8,7 +8,7 @@ import { TEMPLATES } from '@/lib/templates'
 import { FastLogButton } from './FastLogButton'
 import { XPToast } from './XPToast'
 import { WeekGoal } from './WeekGoal'
-import { Check, CheckCheck, ChevronDown, ChevronUp, X } from 'lucide-react'
+import { Check, CheckCheck, ChevronDown, ChevronUp, RefreshCw, X } from 'lucide-react'
 
 type RowLogEntry = PlanRowWithLogs['logEntries'][number]
 
@@ -130,6 +130,11 @@ export function ThisWeek() {
   const [suppressedIds, setSuppressedIds] = useState<Set<string>>(new Set())
   const [loggingRow, setLoggingRow] = useState<string | null>(null)
   const [planAction, setPlanAction] = useState<'comeback' | 'copy' | 'generate' | null>(null)
+  const [stravaConnected, setStravaConnected] = useState(false)
+  const [stravaSyncing, setStravaSyncing] = useState(false)
+  // Guards concurrent syncs (e.g. the post-OAuth auto-sync racing a tap):
+  // state is stale inside closures, a ref is not.
+  const stravaSyncingRef = useRef(false)
 
   // Today-first: start with every day collapsed EXCEPT today (client-local).
   // On weekends everything starts collapsed (the recap card leads instead).
@@ -181,6 +186,80 @@ export function ThisWeek() {
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.today])
+
+  const handleStravaSync = useCallback(async () => {
+    if (stravaSyncingRef.current) return
+    stravaSyncingRef.current = true
+    setStravaSyncing(true)
+    try {
+      const res = await fetch('/api/strava/sync', { method: 'POST' })
+      if (!res.ok) {
+        setToast({ kind: 'error', message: 'Strava sync failed - try again' })
+        return
+      }
+      const result: { imported: unknown[]; skipped: number; totalXP: number } = await res.json()
+      const count = result.imported.length
+      if (count > 0) {
+        setToast({
+          kind: 'action',
+          message: `Imported ${count} ${count === 1 ? 'activity' : 'activities'} +${result.totalXP} XP`,
+        })
+        fetchData()
+      } else {
+        setToast({ kind: 'action', message: 'Up to date - nothing new on Strava' })
+      }
+    } catch (error) {
+      console.error('Failed to sync Strava:', error)
+      setToast({ kind: 'error', message: 'Strava sync failed - try again' })
+    } finally {
+      stravaSyncingRef.current = false
+      setStravaSyncing(false)
+    }
+  }, [fetchData])
+
+  // Non-blocking probe: does a Strava connection exist? Failures stay silent —
+  // the sync button simply doesn't render.
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/strava/status')
+        if (!res.ok) return
+        const status: { connected?: boolean } = await res.json()
+        if (!cancelled) setStravaConnected(status.connected === true)
+      } catch {
+        // Silent by design.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // OAuth return from /api/strava/callback (?strava=connected|error). Reads
+  // window.location directly — useSearchParams would force a Suspense wrapper
+  // on this page. Strips the param immediately so a refresh can't re-toast.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const strava = params.get('strava')
+    if (!strava) return
+    params.delete('strava')
+    const query = params.toString()
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + (query ? `?${query}` : '') + window.location.hash
+    )
+    if (strava === 'connected') {
+      setStravaConnected(true)
+      setToast({ kind: 'action', message: 'Strava connected.' })
+      handleStravaSync()
+    } else if (strava === 'error') {
+      setToast({ kind: 'error', message: 'Strava connection failed - try again' })
+    }
+    // Mount-only: the URL param is consumed exactly once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const showLogToast = (xp: number, pr: PRInfo | null) => {
     if (pr) setToast({ kind: 'pr', xp, message: prMessage(pr) })
@@ -503,9 +582,22 @@ export function ThisWeek() {
       <div className="sticky top-0 bg-zinc-950/95 backdrop-blur-sm border-b border-zinc-800 z-30 px-4 py-3">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold text-white">This Week</h1>
-          <div className="text-right">
-            <div className="text-2xl font-bold text-emerald-400">{data.weeklyXP || 0} XP</div>
-            <div className="text-xs text-zinc-500">weekly total</div>
+          <div className="flex items-center gap-3">
+            {stravaConnected && (
+              <button
+                onClick={handleStravaSync}
+                disabled={stravaSyncing}
+                title="Sync Strava"
+                aria-label="Sync Strava"
+                className="p-2 text-zinc-400 hover:text-white disabled:opacity-60 active:scale-95 transition-transform"
+              >
+                <RefreshCw className={`w-4 h-4 ${stravaSyncing ? 'animate-spin' : ''}`} />
+              </button>
+            )}
+            <div className="text-right">
+              <div className="text-2xl font-bold text-emerald-400">{data.weeklyXP || 0} XP</div>
+              <div className="text-xs text-zinc-500">weekly total</div>
+            </div>
           </div>
         </div>
         <WeekGoal

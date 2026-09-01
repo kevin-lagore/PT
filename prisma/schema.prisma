@@ -43,5 +43,13 @@ model LogEntry {
   notes              String?
   linkedPlanRowId    String?
   linkedPlanRow      PlanRow? @relation(fields: [linkedPlanRowId], references: [id], onDelete: SetNull)
+  stravaActivityId   String?  @unique // Strava activity id when imported via sync
   createdAt          DateTime @default(now())
+}
+
+// Simple key/value store (Strava tokens + sync bookkeeping).
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }
