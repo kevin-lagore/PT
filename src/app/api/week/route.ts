@@ -10,6 +10,7 @@ interface PriorLog {
   reps: number | null
   weight: number | null
   km: number | null
+  durationMin: number | null
   setsCompleted: number | null
   createdAt: Date
 }
@@ -76,6 +77,7 @@ export async function GET() {
         reps: true,
         weight: true,
         km: true,
+        durationMin: true,
         setsCompleted: true,
         createdAt: true
       },
@@ -125,17 +127,27 @@ export async function GET() {
     }
 
     let km: number | null = null
+    let durationMin: number | null = null
     if (type === 'Run') {
       for (const entry of session) {
-        if (entry.km != null) km = entry.km
+        if (entry.km != null) {
+          km = entry.km
+          durationMin = entry.durationMin
+        }
       }
     }
+
+    // Pace only when the run has BOTH a distance and a duration.
+    const paceSecPerKm =
+      km != null && km > 0 && durationMin != null && durationMin > 0
+        ? Math.round((durationMin * 60) / km)
+        : null
 
     const daysAgo = Math.round(
       (todayLocal.getTime() - new Date(lastDate + 'T00:00:00').getTime()) / 86_400_000
     )
 
-    return { date: lastDate, daysAgo, sets, km }
+    return { date: lastDate, daysAgo, sets, km, durationMin, paceSecPerKm }
   }
 
   // Calculate weekly XP

@@ -27,12 +27,24 @@ export function epley1RM(weight: number, reps: number): number {
   return weight * (1 + reps / 30)
 }
 
+// Seconds-per-km -> 'M:SS/km' (e.g. 385 -> '6:25/km'). Seconds are rounded
+// first so 384.6 -> 6:25, and a round-up to a full minute carries (359.7 ->
+// '6:00/km').
+export function formatPace(secPerKm: number): string {
+  const total = Math.round(secPerKm)
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}/km`
+}
+
 // The most recent prior session for a plan row's exercise.
 export interface LastEntry {
   date: string                                            // local yyyy-mm-dd of that most-recent session
   daysAgo: number
   sets: { reps: number | null; weight: number | null }[]  // gym: that session's sets in logged order; empty for runs
   km: number | null                                       // run: last logged distance, else null
+  durationMin: number | null                              // run: last logged moving time (minutes), else null
+  paceSecPerKm: number | null                             // run: durationMin*60/km — only when both km and duration exist
 }
 
 export interface PRInfo {
@@ -66,6 +78,7 @@ export interface PlanRowWithLogs {
     reps: number | null
     weight: number | null
     km: number | null
+    durationMin: number | null
     circuitsCompleted: number | null
     xp: number
   }[]

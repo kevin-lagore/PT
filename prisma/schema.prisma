@@ -38,12 +38,18 @@ model LogEntry {
   reps               Int?
   weight             Float?   // Weight in kg
   km                 Float?
+  durationMin        Float?   // moving time in minutes
   circuitsCompleted  Int?
   xp                 Int      // Always stored, never recomputed
   notes              String?
   linkedPlanRowId    String?
   linkedPlanRow      PlanRow? @relation(fields: [linkedPlanRowId], references: [id], onDelete: SetNull)
   stravaActivityId   String?  @unique // Strava activity id when imported via sync
+  // JSON blob from the Strava detail fetch:
+  // { movingTimeSec, avgPaceSecPerKm, splitsSecPerKm: number[], paceCV,
+  //   paceDriftPct, avgHr, elevationM } — fields optional/null when unknown.
+  // Non-runs store just { movingTimeSec }.
+  stravaData         String?
   createdAt          DateTime @default(now())
 }
 

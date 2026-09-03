@@ -1,5 +1,5 @@
-import { prisma } from '@/lib/db'
-import { calculateXP, normalizeWorkoutType, formatDate, getMonday, getDayOfWeek } from '@/lib/types'
+import { prisma } from './db'
+import { calculateXP, normalizeWorkoutType, formatDate, getMonday, getDayOfWeek } from './types'
 
 // ---------------------------------------------------------------------------
 // Strava ingest: OAuth token handling + activity sync into LogEntry.
@@ -18,6 +18,7 @@ export interface SyncResult {
   imported: { name: string; type: string; km: number | null; xp: number; date: string }[]
   skipped: number
   totalXP: number
+  enriched: number // existing entries backfilled with stravaData this sync
 }
 
 // Slim shape of a Strava activity (only the fields we read).
@@ -28,6 +29,28 @@ interface StravaActivity {
   distance: number // meters
   moving_time: number // seconds
   start_date_local: string // wall time with a BOGUS trailing 'Z' — see parseStravaLocalDate
+}
+
+// One km split from the activity DETAIL endpoint's splits_metric.
+export interface StravaSplit {
+  distance: number // meters
+  moving_time: number // seconds
+}
+
+// Slim shape of GET /api/v3/activities/{id} (only the fields we read).
+interface StravaActivityDetail {
+  moving_time: number // seconds
+  average_heartrate?: number
+  total_elevation_gain?: number // meters
+  splits_metric?: StravaSplit[]
+}
+
+// Parsed shape of LogEntry.stravaData (all fields null/absent when unknown).
+export interface RunAnalysis {
+  avgPaceSecPerKm: number | null
+  splitsSecPerKm: number[]
+  paceCV: number
+  paceDriftPct: number
 }
 
 const RUN_SPORT_TYPES = ['Run', 'TrailRun', 'VirtualRun']
@@ -60,6 +83,84 @@ export function activityManualXP(movingTimeSeconds: number): number {
 // Dedupe tolerance for manually-logged runs: same local date and within 1 km.
 export function isSameRunKm(existingKm: number | null, incomingKm: number): boolean {
   return existingKm != null && Math.abs(existingKm - incomingKm) <= 1
+}
+
+// Seconds -> minutes rounded to 1 decimal (e.g. 1930s -> 32.2).
+export function secondsToMinutes1dp(seconds: number): number {
+  return Math.round(seconds / 6) / 10
+}
+
+// Pace/consistency analysis for one run.
+//   avgPaceSecPerKm — movingTimeSec / km (null when km is 0/unknown)
+//   splitsSecPerKm  — per-split pace: moving_time / (distance/1000)
+//   paceCV          — stddev/mean of split paces (0 when < 2 splits)
+//   paceDriftPct    — (mean pace of the final third of splits - mean of the
+//                     first third) / first third * 100; positive = fading.
+//                     0 when < 3 splits (thirds are floor(n/3) splits each).
+export function computeRunAnalysis(input: {
+  movingTimeSec: number
+  km: number
+  splits: StravaSplit[]
+}): RunAnalysis {
+  const { movingTimeSec, km, splits } = input
+
+  const avgPaceSecPerKm =
+    Number.isFinite(km) && km > 0 && Number.isFinite(movingTimeSec)
+      ? Math.round(movingTimeSec / km)
+      : null
+
+  // Unrounded per-split paces (sec/km); splits without distance are unusable.
+  const paces = splits
+    .filter(s => Number.isFinite(s.distance) && s.distance > 0 && Number.isFinite(s.moving_time))
+    .map(s => s.moving_time / (s.distance / 1000))
+
+  const splitsSecPerKm = paces.map(p => Math.round(p))
+
+  const mean = (values: number[]) => values.reduce((sum, v) => sum + v, 0) / values.length
+
+  let paceCV = 0
+  if (paces.length >= 2) {
+    const m = mean(paces)
+    if (m > 0) {
+      const variance = mean(paces.map(p => (p - m) ** 2))
+      paceCV = Math.round((Math.sqrt(variance) / m) * 1000) / 1000
+    }
+  }
+
+  let paceDriftPct = 0
+  if (paces.length >= 3) {
+    const third = Math.floor(paces.length / 3)
+    const firstMean = mean(paces.slice(0, third))
+    const lastMean = mean(paces.slice(paces.length - third))
+    if (firstMean > 0) {
+      paceDriftPct = Math.round(((lastMean - firstMean) / firstMean) * 1000) / 10
+    }
+  }
+
+  return { avgPaceSecPerKm, splitsSecPerKm, paceCV, paceDriftPct }
+}
+
+// Serialize a detail fetch into LogEntry.stravaData. Runs carry the full
+// analysis (plus HR/elevation when Strava has them); everything else stores
+// just the moving time.
+export function buildStravaData(detail: StravaActivityDetail, isRun: boolean, km: number | null): string {
+  if (!isRun) {
+    return JSON.stringify({ movingTimeSec: detail.moving_time })
+  }
+  const analysis = computeRunAnalysis({
+    movingTimeSec: detail.moving_time,
+    km: km ?? 0,
+    splits: detail.splits_metric ?? []
+  })
+  return JSON.stringify({
+    movingTimeSec: detail.moving_time,
+    avgPaceSecPerKm: analysis.avgPaceSecPerKm,
+    splitsSecPerKm: analysis.splitsSecPerKm,
+    paceCV: analysis.paceCV,
+    paceDriftPct: analysis.paceDriftPct,
+    avgHr: detail.average_heartrate ?? null,
+    elevationM: detail.total_elevation_gain ?? null
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -194,10 +295,31 @@ async function fetchActivities(accessToken: string, afterEpoch: number): Promise
   return activities
 }
 
+// Detail fetch for one activity (splits, HR, elevation). Returns null on ANY
+// failure — enrichment is best-effort and must never fail a sync/import.
+async function fetchActivityDetail(
+  accessToken: string,
+  activityId: string
+): Promise<StravaActivityDetail | null> {
+  try {
+    const res = await fetch(`https://www.strava.com/api/v3/activities/${activityId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+    if (!res.ok) return null
+    return (await res.json()) as StravaActivityDetail
+  } catch {
+    return null
+  }
+}
+
 // Imports one activity. Returns the imported summary, or null when the
 // activity is skipped (already imported, duplicate manual run, or a short
-// non-run).
-async function importActivity(activity: StravaActivity): Promise<SyncResult['imported'][number] | null> {
+// non-run). durationMin comes from the summary's moving_time so it survives a
+// failed detail fetch; stravaData is only stored when the detail fetch works.
+async function importActivity(
+  activity: StravaActivity,
+  accessToken: string
+): Promise<SyncResult['imported'][number] | null> {
   const stravaActivityId = String(activity.id)
 
   // Dedupe: already imported via Strava.
@@ -211,19 +333,24 @@ async function importActivity(activity: StravaActivity): Promise<SyncResult['imp
   const localDay = formatDate(localDate)
   const isRun = RUN_SPORT_TYPES.includes(activity.sport_type)
 
+  const durationMin = secondsToMinutes1dp(activity.moving_time)
+
   if (!isRun) {
     // Non-run: only count sessions of 15+ moving minutes.
     if (activity.moving_time < MIN_ACTIVITY_SECONDS) return null
     const xp = calculateXP('Activity', { manualXP: activityManualXP(activity.moving_time) })
     const name = activity.name || activity.sport_type
+    const detail = await fetchActivityDetail(accessToken, stravaActivityId)
     await prisma.logEntry.create({
       data: {
         date: localDate,
         type: 'Activity',
         exerciseOrActivity: name,
         km: null,
+        durationMin,
         xp,
-        stravaActivityId
+        stravaActivityId,
+        stravaData: detail ? buildStravaData(detail, false, null) : null
       }
     })
     return { name, type: 'Activity', km: null, xp, date: localDay }
@@ -278,18 +405,54 @@ async function importActivity(activity: StravaActivity): Promise<SyncResult['imp
 
   const name = planExercise ?? (activity.name || activity.sport_type)
   const xp = calculateXP('Run', { km })
+  const detail = await fetchActivityDetail(accessToken, stravaActivityId)
   await prisma.logEntry.create({
     data: {
       date: localDate,
       type: 'Run',
       exerciseOrActivity: name,
       km,
+      durationMin,
       xp,
       stravaActivityId,
-      linkedPlanRowId
+      linkedPlanRowId,
+      stravaData: detail ? buildStravaData(detail, true, km) : null
     }
   })
   return { name, type: 'Run', km, xp, date: localDay }
+}
+
+// ENRICHMENT BACKFILL: upgrade up to `limit` already-imported entries that
+// predate stravaData (or whose detail fetch failed) with a fresh detail
+// fetch. Best-effort: a failed fetch just leaves the entry for a later sync.
+async function backfillStravaData(accessToken: string, limit: number): Promise<number> {
+  const pending = await prisma.logEntry.findMany({
+    where: { stravaActivityId: { not: null }, stravaData: null },
+    select: { id: true, type: true, km: true, stravaActivityId: true },
+    orderBy: { date: 'desc' },
+    take: limit
+  })
+
+  let enriched = 0
+  for (const entry of pending) {
+    if (!entry.stravaActivityId) continue
+    const detail = await fetchActivityDetail(accessToken, entry.stravaActivityId)
+    if (!detail) continue
+    const isRun = normalizeWorkoutType(entry.type) === 'Run'
+    try {
+      await prisma.logEntry.update({
+        where: { id: entry.id },
+        data: {
+          durationMin: secondsToMinutes1dp(detail.moving_time),
+          stravaData: buildStravaData(detail, isRun, entry.km)
+        }
+      })
+      enriched++
+    } catch {
+      // Never let one bad row abort the sync.
+    }
+  }
+  return enriched
 }
 
 export async function syncStrava(): Promise<SyncResult> {
@@ -311,7 +474,7 @@ export async function syncStrava(): Promise<SyncResult> {
   for (const activity of activities) {
     // Never let one bad activity abort the sync.
     try {
-      const result = await importActivity(activity)
+      const result = await importActivity(activity, accessToken)
       if (result) imported.push(result)
       else skipped++
     } catch {
@@ -319,9 +482,19 @@ export async function syncStrava(): Promise<SyncResult> {
     }
   }
 
+  // Backfill detail data onto entries imported before enrichment existed (or
+  // whose detail fetch failed last time). 10 per sync keeps us well inside
+  // Strava's rate limits.
+  let enriched = 0
+  try {
+    enriched = await backfillStravaData(accessToken, 10)
+  } catch {
+    // Enrichment is best-effort; the sync result still stands.
+  }
+
   await setSetting('strava_last_sync', new Date().toISOString())
   await setSetting('strava_last_epoch', String(nowSec))
 
   const totalXP = imported.reduce((sum, item) => sum + item.xp, 0)
-  return { imported, skipped, totalXP }
+  return { imported, skipped, totalXP, enriched }
 }

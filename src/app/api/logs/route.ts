@@ -12,6 +12,7 @@ export async function POST(request: NextRequest) {
     reps,
     weight,
     km,
+    durationMin,
     circuitsCompleted,
     manualXP,
     notes,
@@ -22,6 +23,11 @@ export async function POST(request: NextRequest) {
   const canonicalType = normalizeWorkoutType(typeof type === 'string' ? type : '')
   if (canonicalType === null) {
     return NextResponse.json({ errors: [`Unknown workout type: ${type}`] }, { status: 400 })
+  }
+
+  // Optional moving time in minutes.
+  if (durationMin != null && (typeof durationMin !== 'number' || !Number.isFinite(durationMin) || durationMin <= 0)) {
+    return NextResponse.json({ errors: ['durationMin must be a positive number of minutes'] }, { status: 400 })
   }
 
   // Calculate XP based on the canonical type
@@ -91,6 +97,7 @@ export async function POST(request: NextRequest) {
       reps: reps ?? null,
       weight: weight ?? null,
       km: km ?? null,
+      durationMin: durationMin ?? null,
       circuitsCompleted: circuitsCompleted ?? null,
       xp,
       notes: notes ?? null,

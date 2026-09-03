@@ -22,7 +22,7 @@
 // promises — progression is per-exercise by name regardless of which actual
 // day the logs landed on.
 
-import { DAYS, formatDate, getDayOfWeek, normalizeExerciseName, normalizeWorkoutType } from './types'
+import { DAYS, formatDate, formatPace, getDayOfWeek, normalizeExerciseName, normalizeWorkoutType } from './types'
 import type { CatalogEntry, MovementPattern } from './exercise-catalog'
 import { POOLS, VPUSH_FROM_HPUSH_RATIO, findCatalogEntry, nextRotationEntry } from './exercise-catalog'
 
@@ -38,6 +38,8 @@ export interface GenRow {
 }
 
 // Slim LogEntry shape the generator needs (the route selects exactly this).
+// durationMin/stravaData feed the run-quality guidance and may be absent on
+// old rows — everything degrades gracefully when they are null.
 export interface GenLog {
   date: Date
   type: string
@@ -46,6 +48,8 @@ export interface GenLog {
   reps: number | null
   weight: number | null
   km: number | null
+  durationMin: number | null
+  stravaData: string | null
   createdAt: Date
 }
 
@@ -55,9 +59,9 @@ export type SourceWeekLog = Pick<GenLog, 'date' | 'type'>
 
 // Extra context for rotation + determinism.
 export interface GenerateContext {
-  // The target week's Monday as yyyy-mm-dd. Not used for branching today, but
-  // part of the contract so generation stays a pure function of explicit
-  // inputs — never the wall clock.
+  // The target week's Monday as yyyy-mm-dd. Anchors the run-quality guidance's
+  // 28-day window, and keeps generation a pure function of explicit inputs —
+  // never the wall clock.
   targetWeekStartYmd: string
   // Rows of up to the last 3 SAVED plans, NEWEST first, source plan included.
   // Empty on the reconstruction path (no saved plan), which disables rotation
@@ -80,6 +84,15 @@ const BIG_LIFT_RE = /squat|deadlift|rdl|leg press|lunge/i
 
 const RUN_CAP_MINUTES = 40
 const RUN_NUDGE_MINUTES = 5
+
+// Run-quality guidance: paced runs (km + durationMin) from the 28 days before
+// the target Monday. Drift above +8% = faded late; within +/-5% = even pacing.
+const RUN_QUALITY_WINDOW_DAYS = 28
+const PACE_DRIFT_FADE_PCT = 8
+const PACE_DRIFT_EVEN_PCT = 5
+// Above this split-pace CV the run was interval-like (run/walk breaks, reps):
+// drift is dominated by the work/rest structure, so fade commentary is noise.
+const PACE_CV_INTERVAL_THRESHOLD = 0.10
 
 // Ratio estimates start deliberately light: 90% of the ratio-implied weight,
 // rounded to the nearest 2.5kg jump; anything under one 2.5kg step is treated
@@ -123,6 +136,33 @@ export function nudgeRunTime(repsTimeText: string): string {
   }
 
   return repsTimeText
+}
+
+// Fail-soft extraction of paceDriftPct from a LogEntry.stravaData JSON blob:
+// missing, unparseable, or non-numeric -> null.
+export function parsePaceDriftPct(stravaData: string | null): number | null {
+  if (!stravaData) return null
+  try {
+    const parsed: unknown = JSON.parse(stravaData)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const drift = (parsed as { paceDriftPct?: unknown }).paceDriftPct
+    return typeof drift === 'number' && Number.isFinite(drift) ? drift : null
+  } catch {
+    return null
+  }
+}
+
+// Fail-soft extraction of paceCV (same contract as parsePaceDriftPct).
+export function parsePaceCV(stravaData: string | null): number | null {
+  if (!stravaData) return null
+  try {
+    const parsed: unknown = JSON.parse(stravaData)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const cv = (parsed as { paceCV?: unknown }).paceCV
+    return typeof cv === 'number' && Number.isFinite(cv) ? cv : null
+  } catch {
+    return null
+  }
 }
 
 // True when a run row's minutes already sit at/over the 40-min cap (i.e. the
@@ -448,6 +488,62 @@ export function generateWeekRows(
         notes.push(`${previous} is at the ${RUN_CAP_MINUTES}-min cap -> alternating to ${rows[i].exercise}`)
       }
       break
+    }
+  }
+
+  // RUN-QUALITY GUIDANCE. Deterministic: the 28-day window hangs off the
+  // target Monday (never the wall clock), and 'most recent' resolves by local
+  // date with createdAt as the tiebreak. Only fires when next week actually
+  // has a run row AND the window holds at least one paced run (km +
+  // durationMin). stravaData is optional and fail-soft: without a parseable
+  // paceDriftPct the pace note still lands, just without drift commentary.
+  const hasRunRow = rows.some(row => normalizeWorkoutType(row.type) === 'Run')
+  if (hasRunRow) {
+    const windowStart = new Date(context.targetWeekStartYmd + 'T00:00:00')
+    windowStart.setDate(windowStart.getDate() - RUN_QUALITY_WINDOW_DAYS)
+
+    let latest: GenLog | null = null
+    for (const log of historyLogs) {
+      if (normalizeWorkoutType(log.type) !== 'Run') continue
+      if (log.km == null || log.km <= 0) continue
+      if (log.durationMin == null || log.durationMin <= 0) continue
+      if (log.date < windowStart) continue
+      if (
+        !latest ||
+        formatDate(log.date) > formatDate(latest.date) ||
+        (formatDate(log.date) === formatDate(latest.date) &&
+          log.createdAt.getTime() > latest.createdAt.getTime())
+      ) {
+        latest = log
+      }
+    }
+
+    if (latest) {
+      const km = latest.km as number
+      const durationMin = latest.durationMin as number
+      const paceSecPerKm = (durationMin * 60) / km
+      const drift = parsePaceDriftPct(latest.stravaData)
+      const cv = parsePaceCV(latest.stravaData)
+      // Interval-like sessions (run/walk breaks, reps) have structurally spiky
+      // split paces — drift/evenness commentary would be judging the rest
+      // breaks, not the running. Pace itself is still worth reporting.
+      const continuous = cv == null || cv <= PACE_CV_INTERVAL_THRESHOLD
+
+      let paceNote = `Runs: last ${km} km at ${formatPace(paceSecPerKm)}`
+      if (continuous && drift != null && drift > PACE_DRIFT_FADE_PCT) {
+        paceNote += ` - you faded ${Math.round(drift)}% late, start slower`
+        for (const row of rows) {
+          if (normalizeWorkoutType(row.type) !== 'Run') continue
+          row.notes = row.notes
+            ? `${row.notes} - Start slower than you feel you should`
+            : 'Start slower than you feel you should'
+        }
+      }
+      notes.push(paceNote)
+
+      if (continuous && drift != null && drift >= -PACE_DRIFT_EVEN_PCT && drift <= PACE_DRIFT_EVEN_PCT) {
+        notes.push('Your last run was evenly paced - keep that up')
+      }
     }
   }
 

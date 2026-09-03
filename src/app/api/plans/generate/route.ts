@@ -66,6 +66,8 @@ export async function POST(request: NextRequest) {
         reps: true,
         weight: true,
         km: true,
+        durationMin: true,
+        stravaData: true,
         createdAt: true
       },
       orderBy: { createdAt: 'asc' }
