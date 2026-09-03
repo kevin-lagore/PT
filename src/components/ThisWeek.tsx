@@ -2,13 +2,13 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { DAYS, getDayOfWeek, normalizeWorkoutType } from '@/lib/types'
+import { DAYS, formatPace, getDayOfWeek, normalizeWorkoutType } from '@/lib/types'
 import type { LastEntry, PlanRowWithLogs, PRInfo, ToastMessage, WeekApiResponse } from '@/lib/types'
 import { TEMPLATES } from '@/lib/templates'
 import { FastLogButton } from './FastLogButton'
 import { XPToast } from './XPToast'
 import { WeekGoal } from './WeekGoal'
-import { Check, CheckCheck, ChevronDown, ChevronUp, RefreshCw, X } from 'lucide-react'
+import { Check, CheckCheck, ChevronDown, ChevronUp, RefreshCw, Wand2, X } from 'lucide-react'
 
 type RowLogEntry = PlanRowWithLogs['logEntries'][number]
 
@@ -130,6 +130,7 @@ export function ThisWeek() {
   const [suppressedIds, setSuppressedIds] = useState<Set<string>>(new Set())
   const [loggingRow, setLoggingRow] = useState<string | null>(null)
   const [planAction, setPlanAction] = useState<'comeback' | 'copy' | 'generate' | null>(null)
+  const [editSheetOpen, setEditSheetOpen] = useState(false)
   const [stravaConnected, setStravaConnected] = useState(false)
   const [stravaSyncing, setStravaSyncing] = useState(false)
   // Guards concurrent syncs (e.g. the post-OAuth auto-sync racing a tap):
@@ -502,6 +503,18 @@ export function ThisWeek() {
     }
   }
 
+  // Called by EditPlanSheet after a 200 from /api/plans/edit. The sheet
+  // unmounts on close, which clears its textarea and errors for next time.
+  const handlePlanEdited = (summary: string[]) => {
+    setEditSheetOpen(false)
+    const message = summary.join(' · ')
+    setToast({
+      kind: 'action',
+      message: message.length > 120 ? `${message.slice(0, 119).trimEnd()}…` : message,
+    })
+    fetchData()
+  }
+
   const toggleDay = (day: string) => {
     setCollapsedDays((prev) => {
       const next = new Set(prev)
@@ -583,6 +596,16 @@ export function ThisWeek() {
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold text-white">This Week</h1>
           <div className="flex items-center gap-3">
+            {rows.length > 0 && (
+              <button
+                onClick={() => setEditSheetOpen(true)}
+                title="Change this week's plan"
+                aria-label="Change this week's plan"
+                className="p-2 text-zinc-400 hover:text-white active:scale-95 transition-transform"
+              >
+                <Wand2 className="w-4 h-4" />
+              </button>
+            )}
             {stravaConnected && (
               <button
                 onClick={handleStravaSync}
@@ -739,6 +762,10 @@ export function ThisWeek() {
         </div>
       )}
 
+      {editSheetOpen && (
+        <EditPlanSheet onClose={() => setEditSheetOpen(false)} onApplied={handlePlanEdited} />
+      )}
+
       <FastLogButton
         onLog={async (logData) => {
           // FastLogButton's contract: a rejected onLog keeps the sheet (and
@@ -795,6 +822,106 @@ function MessageStrip({ data }: { data: WeekApiResponse }) {
   }
 
   return <div className="px-4 py-2 text-sm text-zinc-400">{content}</div>
+}
+
+// Bottom sheet for natural-language plan edits (POST /api/plans/edit).
+// Mounted only while open, so closing it resets the textarea and errors.
+// A 400 keeps the sheet open with the server's errors and the typed text.
+function EditPlanSheet({
+  onClose,
+  onApplied,
+}: {
+  onClose: () => void
+  onApplied: (summary: string[]) => void
+}) {
+  const [instruction, setInstruction] = useState('')
+  const [pending, setPending] = useState(false)
+  const [errors, setErrors] = useState<string[]>([])
+
+  const handleApply = async () => {
+    if (pending || instruction.trim() === '') return
+    setPending(true)
+    setErrors([])
+    try {
+      const res = await fetch('/api/plans/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction }),
+      })
+      if (!res.ok) {
+        // 400 carries { errors: string[] } — show them inline, keep the text.
+        let msgs: string[] = []
+        try {
+          const body: { errors?: unknown } = await res.json()
+          if (Array.isArray(body.errors)) {
+            msgs = body.errors.filter((e): e is string => typeof e === 'string')
+          }
+        } catch {
+          // Non-JSON error body — fall through to the generic message.
+        }
+        setErrors(msgs.length > 0 ? msgs : ['Could not change the plan - try again'])
+        return
+      }
+      const result: { summary: string[]; method: 'ai' | 'rules' } = await res.json()
+      onApplied(result.summary)
+    } catch (error) {
+      console.error('Failed to edit plan:', error)
+      setErrors(['Could not reach the server - try again'])
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center"
+      onClick={onClose}
+    >
+      <div
+        className="bg-zinc-900 w-full sm:max-w-md sm:rounded-xl rounded-t-xl p-4 pb-safe max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-semibold text-white">Change this week&apos;s plan</h2>
+          <button onClick={onClose} className="text-zinc-400 hover:text-white p-1">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        {errors.length > 0 && (
+          <div className="bg-red-900/30 border border-red-800 rounded-lg px-4 py-3 mb-4 space-y-1">
+            {errors.map((err, i) => (
+              <p key={i} className="text-red-300 text-sm">
+                {err}
+              </p>
+            ))}
+          </div>
+        )}
+
+        <textarea
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          rows={3}
+          placeholder={'e.g. add a park circuit on Wednesday\nswap Thursday gym for a run'}
+          autoFocus
+          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white placeholder-zinc-500 text-sm resize-none"
+        />
+
+        <div className="flex items-center gap-2 mt-4">
+          <button onClick={onClose} disabled={pending} className="px-3 py-2 text-zinc-400 text-sm">
+            Cancel
+          </button>
+          <button
+            onClick={handleApply}
+            disabled={pending || instruction.trim() === ''}
+            className="flex-1 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-60 text-white font-medium rounded-lg py-3 active:scale-95 transition-transform"
+          >
+            {pending ? 'Applying...' : 'Apply'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // Saturday/Sunday summary card: the week is done, look back kindly.
@@ -878,6 +1005,7 @@ function ExerciseRow({
     if (setsDesc) lastLine = `Last: ${setsDesc} - ${agoText(lastEntry.daysAgo)}`
   } else if (isRun && lastEntry && lastEntry.km != null) {
     lastLine = `Last: ${formatNumber(lastEntry.km)} km`
+    if (lastEntry.paceSecPerKm != null) lastLine += ` · ${formatPace(lastEntry.paceSecPerKm)}`
   }
 
   // For gym: count log entries (each entry = 1 set)
@@ -990,7 +1118,14 @@ function ExerciseRow({
       if (!log.reps && !log.weight) parts.push('logged')
       return parts.join(' ')
     }
-    if (isRun) return `${log.km} km`
+    if (isRun) {
+      // Append pace when moving time was captured (e.g. via Strava import).
+      const pace =
+        log.durationMin != null && log.km
+          ? ` · ${formatPace((log.durationMin * 60) / log.km)}`
+          : ''
+      return `${log.km} km${pace}`
+    }
     if (isCircuit) return `${log.circuitsCompleted} circuits`
     return `${log.xp} XP`
   }
