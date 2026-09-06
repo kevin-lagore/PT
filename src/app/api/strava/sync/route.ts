@@ -1,8 +1,10 @@
-import { NextResponse } from 'next/server'
+﻿import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { isStravaConfigured, syncStrava } from '@/lib/strava'
 
 export const dynamic = 'force-dynamic'
+// Vercel: allow long Claude / Strava-detail calls (Hobby default is 10s)
+export const maxDuration = 60
 
 export async function POST() {
   if (!isStravaConfigured()) {
@@ -17,7 +19,7 @@ export async function POST() {
   })
   if (!refreshToken) {
     return NextResponse.json(
-      { errors: ['Strava is not connected — visit /api/strava/auth first'] },
+      { errors: ['Strava is not connected â€” visit /api/strava/auth first'] },
       { status: 400 }
     )
   }

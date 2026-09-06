@@ -11,6 +11,9 @@ import {
   validateOps,
 } from '@/lib/plan-edit'
 
+// Vercel: the Claude parse can run past the 10s Hobby function default.
+export const maxDuration = 60
+
 const EXAMPLE_PHRASINGS = [
   '"add in an extra park based circuit workout"',
   '"swap one of the runs for a gym"',

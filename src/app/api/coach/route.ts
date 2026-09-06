@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+﻿import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import {
   CoachBrief,
@@ -9,11 +9,13 @@ import {
 } from '@/lib/coach'
 
 export const dynamic = 'force-dynamic'
+// Vercel: allow long Claude / Strava-detail calls (Hobby default is 10s)
+export const maxDuration = 60
 
 const BRIEF_KEY = 'coach_brief'
 const FINGERPRINT_KEY = 'coach_brief_fingerprint'
 
-// Fail-soft parse of the cached Setting value — a corrupt blob just reads as
+// Fail-soft parse of the cached Setting value â€” a corrupt blob just reads as
 // 'no brief yet' (stale: true) instead of erroring the home screen.
 function parseStoredBrief(value: string | null): CoachBrief | null {
   if (!value) return null
@@ -32,7 +34,7 @@ function parseStoredBrief(value: string | null): CoachBrief | null {
   }
 }
 
-// GET /api/coach — the cached brief; NEVER generates.
+// GET /api/coach â€” the cached brief; NEVER generates.
 //   200 { brief: CoachBrief | null, stale: boolean }
 // stale = no brief yet, the local day rolled, or training data changed since
 // generation (fingerprint mismatch).
@@ -48,7 +50,7 @@ export async function GET() {
   return NextResponse.json({ brief, stale })
 }
 
-// POST /api/coach — regenerate now (AI when ANTHROPIC_API_KEY is set, else
+// POST /api/coach â€” regenerate now (AI when ANTHROPIC_API_KEY is set, else
 // computed; any AI failure falls back to computed silently), store, return.
 //   200 { brief: CoachBrief }
 export async function POST() {
