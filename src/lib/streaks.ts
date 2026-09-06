@@ -50,6 +50,64 @@ function weekStartOf(ymd: string): string {
   return formatDate(getMonday(parseLocalDate(ymd)))
 }
 
+// Comeback start weeks: the week of the first session ever, and the week of any
+// session whose previous session day is >= COMEBACK_GAP_DAYS days earlier.
+// (A start week's first session IS the comeback session: a >= 14-day gap can
+// never end inside a week that already had a session.)
+function findComebackStartWeeks(allSessionDays: string[]): Set<string> {
+  const comebackStartWeeks = new Set<string>()
+  let prevDay: string | null = null
+  for (const day of allSessionDays) {
+    if (prevDay === null || diffDays(parseLocalDate(prevDay), parseLocalDate(day)) >= COMEBACK_GAP_DAYS) {
+      comebackStartWeeks.add(weekStartOf(day))
+    }
+    prevDay = day
+  }
+  return comebackStartWeeks
+}
+
+// Ramp is anchored to calendar weeks: goal 2 in the start week, 3 the very next
+// calendar week (whether or not it has sessions), 4 thereafter.
+function makeGoalForWeek(comebackStartWeeks: Set<string>): (weekStartYmd: string) => number {
+  return (weekStartYmd: string): number => {
+    if (comebackStartWeeks.has(weekStartYmd)) return 2
+    if (comebackStartWeeks.has(addDaysYmd(weekStartYmd, -7))) return 3
+    return WEEKLY_GOAL
+  }
+}
+
+// Effective goal (comeback ramp 2/3/4) for each requested week start — the
+// exact detection + goal logic computeStreakInfo uses, exposed for derived
+// metrics (Base score). Mirrors computeStreakInfo's current-week special case:
+// when the week containing `now` has no session yet and the gap since the last
+// workout already reached COMEBACK_GAP_DAYS (or there are no logs at all), the
+// next session would start a ramp there — that week's goal is prospectively 2.
+export function effectiveGoalsByWeek(
+  allLogDates: Date[],
+  weekStartYmds: string[],
+  now?: Date
+): Map<string, number> {
+  const today = now ?? new Date()
+  const todayYmd = formatDate(today)
+  const currentWeekStart = formatDate(getMonday(today))
+
+  const allSessionDays = [...new Set(allLogDates.map(d => formatDate(d)))].sort()
+  const goalForWeek = makeGoalForWeek(findComebackStartWeeks(allSessionDays))
+
+  const lastSessionDay = allSessionDays.length > 0 ? allSessionDays[allSessionDays.length - 1] : null
+  const currentWeekHasSession = allSessionDays.some(d => weekStartOf(d) === currentWeekStart)
+  const prospectiveRamp =
+    !currentWeekHasSession &&
+    (lastSessionDay === null ||
+      diffDays(parseLocalDate(lastSessionDay), parseLocalDate(todayYmd)) >= COMEBACK_GAP_DAYS)
+
+  const goals = new Map<string, number>()
+  for (const ws of weekStartYmds) {
+    goals.set(ws, ws === currentWeekStart && prospectiveRamp ? 2 : goalForWeek(ws))
+  }
+  return goals
+}
+
 export function computeStreakInfo(allLogDates: Date[], now?: Date): StreakResult {
   const today = now ?? new Date()
   const todayYmd = formatDate(today)
@@ -76,26 +134,8 @@ export function computeStreakInfo(allLogDates: Date[], now?: Date): StreakResult
   const lastSessionDay = allSessionDays[allSessionDays.length - 1]
   const lastWorkoutDaysAgo = diffDays(parseLocalDate(lastSessionDay), parseLocalDate(todayYmd))
 
-  // Comeback start weeks: the week of the first session ever, and the week of any
-  // session whose previous session day is >= COMEBACK_GAP_DAYS days earlier.
-  // (A start week's first session IS the comeback session: a >= 14-day gap can
-  // never end inside a week that already had a session.)
-  const comebackStartWeeks = new Set<string>()
-  let prevDay: string | null = null
-  for (const day of allSessionDays) {
-    if (prevDay === null || diffDays(parseLocalDate(prevDay), parseLocalDate(day)) >= COMEBACK_GAP_DAYS) {
-      comebackStartWeeks.add(weekStartOf(day))
-    }
-    prevDay = day
-  }
-
-  // Ramp is anchored to calendar weeks: goal 2 in the start week, 3 the very next
-  // calendar week (whether or not it has sessions), 4 thereafter.
-  const goalForWeek = (weekStartYmd: string): number => {
-    if (comebackStartWeeks.has(weekStartYmd)) return 2
-    if (comebackStartWeeks.has(addDaysYmd(weekStartYmd, -7))) return 3
-    return WEEKLY_GOAL
-  }
+  // Comeback detection + per-week ramp goals (shared with effectiveGoalsByWeek).
+  const goalForWeek = makeGoalForWeek(findComebackStartWeeks(allSessionDays))
 
   // Sessions per week.
   const sessionsPerWeek = new Map<string, number>()

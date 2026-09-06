@@ -28,7 +28,7 @@ import {
   normalizeExerciseName,
   normalizeWorkoutType,
 } from './types'
-import { StreakResult, WEEKLY_GOAL, computeStreakInfo } from './streaks'
+import { StreakResult, WEEKLY_GOAL, computeStreakInfo, effectiveGoalsByWeek } from './streaks'
 import { parsePaceCV, parsePaceDriftPct, parseRepRange } from './generate'
 
 // ---------------------------------------------------------------------------
@@ -38,9 +38,17 @@ import { parsePaceCV, parsePaceDriftPct, parseRepRange } from './generate'
 export interface CoachBrief {
   headline: string // one blunt line, the state of play
   lines: { topic: 'action' | 'strength' | 'running' | 'consistency'; text: string }[] // 2-5 short lines
-  focus: string // THE one thing to work on now
+  focus: string[] // 1-3 imperative actions, ordered by leverage (highest first)
   generatedAt: string // ISO
   method: 'ai' | 'computed'
+}
+
+// Base — the app's named opinionated metric (research-informed: YNAB Age of
+// Money / Rise Sleep Debt pattern). Deterministic, derived only — never stored.
+export interface BaseScore {
+  score: number // 0-100 rounded
+  delta7: number // score now minus score as of 7 days ago
+  components: { consistency: number; strength: number | null; engine: number } // 0-100 each; strength null when no pre-break reference exists
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +115,7 @@ export interface CoachData {
   historicBests: { exercise: string; bestKg: number | null; bestKm: number | null; dateYmd: string }[]
   // Gym sets / tonnage (sum reps x kg) / run km per week, current week first.
   weeklyVolume: { weekStartYmd: string; gymSets: number; tonnageKg: number; runKm: number }[]
+  base: BaseScore // the app's headline 0-100 metric, derived fresh at gather time
   fingerprint: string
 }
 
@@ -152,6 +161,146 @@ export async function computeCoachFingerprint(now: Date = new Date()): Promise<s
     planId: plan?.id ?? null,
     planRowCount: plan?._count.rows ?? 0,
   })
+}
+
+// ---------------------------------------------------------------------------
+// Base score (deterministic, derived only — never stored)
+// ---------------------------------------------------------------------------
+
+// Relaxed exercise key: parenthetical suffixes stripped so legacy names like
+// 'Back Squat (Barbell)' collapse onto today's 'Back Squat'.
+function relaxedExerciseName(name: string): string {
+  return normalizeExerciseName(name.replace(/\(.*?\)/g, ' '))
+}
+
+const STRENGTH_WINDOW_DAYS = 28 // 'current' strength = best working weight in here
+const ENGINE_WINDOW_DAYS = 14
+const ENGINE_TARGET_KM = 16 // two easy runs a week
+const CONSISTENCY_WEIGHTS = [4, 3, 2, 1] // current week first
+
+// Slim LogEntry shape Base needs (the query selects exactly this).
+export interface BaseLog {
+  date: Date
+  exerciseOrActivity: string
+  weight: number | null
+  km: number | null
+}
+
+function addDaysToYmd(ymd: string, days: number): string {
+  const d = new Date(ymd + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  return formatDate(d)
+}
+
+// Base at one instant. Only logs on-or-before `at`'s local day exist at that
+// instant — filtering here is what makes delta7 a real re-evaluation.
+function baseAt(
+  logs: BaseLog[],
+  allDates: Date[],
+  at: Date
+): { score: number; components: BaseScore['components'] } {
+  const atYmd = formatDate(at)
+  const logsAt = logs.filter(log => formatDate(log.date) <= atYmd)
+  const datesAt = allDates.filter(d => formatDate(d) <= atYmd)
+
+  // consistency — the 4 calendar weeks ending with the current week (current
+  // first), recency weights 4/3/2/1; per-week ratio capped at 1 against the
+  // streak engine's comeback-ramp goal. The in-progress week's goal is prorated
+  // by weekday so a Tuesday is not judged against the full week.
+  const currentWeekStart = formatDate(getMonday(at))
+  const weekStarts = [0, -7, -14, -21].map(offset => addDaysToYmd(currentWeekStart, offset))
+  const goals = effectiveGoalsByWeek(datesAt, weekStarts, at)
+  const sessionYmds = [...new Set(datesAt.map(d => formatDate(d)))]
+  const weekdayMon1 = at.getDay() === 0 ? 7 : at.getDay() // Mon=1 .. Sun=7
+  let weighted = 0
+  let weightSum = 0
+  weekStarts.forEach((weekStart, i) => {
+    const weekEnd = addDaysToYmd(weekStart, 7)
+    const sessionDays = sessionYmds.filter(d => d >= weekStart && d < weekEnd).length
+    let goalUsed = goals.get(weekStart) ?? WEEKLY_GOAL
+    if (i === 0) goalUsed = Math.max(1, Math.round((goalUsed * Math.min(weekdayMon1, 5)) / 5))
+    weighted += CONSISTENCY_WEIGHTS[i] * Math.min(sessionDays / goalUsed, 1)
+    weightSum += CONSISTENCY_WEIGHTS[i]
+  })
+  const consistency = (weighted / weightSum) * 100
+
+  // strength — per relaxed exercise, best working weight in the last 28 days
+  // vs best BEFORE those 28 days; mean of min(current/old, 1) over matched
+  // lifts. No matched lifts -> null (no pre-break reference exists).
+  const strengthCutoffYmd = addDaysToYmd(atYmd, -STRENGTH_WINDOW_DAYS)
+  const recentBest = new Map<string, number>()
+  const olderBest = new Map<string, number>()
+  for (const log of logsAt) {
+    if (log.weight == null) continue
+    const key = relaxedExerciseName(log.exerciseOrActivity)
+    if (!key) continue
+    const bucket = formatDate(log.date) > strengthCutoffYmd ? recentBest : olderBest
+    const best = bucket.get(key)
+    if (best == null || log.weight > best) bucket.set(key, log.weight)
+  }
+  let ratioSum = 0
+  let matchedLifts = 0
+  for (const [key, currentKg] of recentBest) {
+    const oldKg = olderBest.get(key)
+    if (oldKg == null || oldKg <= 0) continue
+    ratioSum += Math.min(currentKg / oldKg, 1)
+    matchedLifts++
+  }
+  const strength = matchedLifts > 0 ? (ratioSum / matchedLifts) * 100 : null
+
+  // engine — run km in the last 14 days against two easy runs a week.
+  const engineCutoffYmd = addDaysToYmd(atYmd, -ENGINE_WINDOW_DAYS)
+  let recentKm = 0
+  for (const log of logsAt) {
+    if (log.km != null && formatDate(log.date) > engineCutoffYmd) recentKm += log.km
+  }
+  const engine = Math.min(recentKm / ENGINE_TARGET_KM, 1) * 100
+
+  const score = Math.round(
+    strength == null
+      ? 0.75 * consistency + 0.25 * engine // renormalized: no strength reference
+      : 0.6 * consistency + 0.2 * strength + 0.2 * engine
+  )
+  return {
+    score,
+    components: {
+      consistency: Math.round(consistency),
+      strength: strength == null ? null : Math.round(strength),
+      engine: Math.round(engine),
+    },
+  }
+}
+
+// Pure core — unit-testable without I/O. `logs` = slim entries covering
+// all loaded/distance entries (all-time); `allDates` = ~1 year of log dates for the goal engine.
+export function computeBaseFromLogs(logs: BaseLog[], allDates: Date[], now: Date = new Date()): BaseScore {
+  const current = baseAt(logs, allDates, now)
+  const weekAgo = new Date(now)
+  weekAgo.setDate(weekAgo.getDate() - 7)
+  const prior = baseAt(logs, allDates, weekAgo)
+  return { score: current.score, delta7: current.score - prior.score, components: current.components }
+}
+
+// Fresh Base on every call — two slim queries, cheap enough for GET /api/coach.
+export async function computeBaseScore(now: Date = new Date()): Promise<BaseScore> {
+  const yearAgo = new Date(now)
+  yearAgo.setDate(yearAgo.getDate() - 365)
+  yearAgo.setHours(0, 0, 0, 0)
+
+  const [logs, dateRows] = await Promise.all([
+    // ALL-TIME loaded/distance entries: the strength component must reach the
+    // pre-break reference however old it is; unloaded rows carry nothing Base
+    // uses, so the query stays small.
+    prisma.logEntry.findMany({
+      where: { OR: [{ weight: { not: null } }, { km: { not: null } }] },
+      select: { date: true, exerciseOrActivity: true, weight: true, km: true },
+    }),
+    prisma.logEntry.findMany({
+      where: { date: { gte: yearAgo } },
+      select: { date: true },
+    }),
+  ])
+  return computeBaseFromLogs(logs, dateRows.map(row => row.date), now)
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +477,7 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
   yearAgo.setDate(yearAgo.getDate() - 365)
   yearAgo.setHours(0, 0, 0, 0)
 
-  const [windowLogs, streakDateRows, plan, logCount, newestLog, allTimeLogs] = await Promise.all([
+  const [windowLogs, streakDateRows, plan, logCount, newestLog, allTimeLogs, baseLogs] = await Promise.all([
     prisma.logEntry.findMany({
       where: { date: { gte: windowStart } },
       select: {
@@ -375,9 +524,18 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
       },
       select: { date: true, exerciseOrActivity: true, weight: true, km: true },
     }),
+    // Slim Base inputs — ALL-TIME loaded/distance entries, so the strength
+    // component can reach the pre-break reference however old it is. Rows
+    // without weight or km carry nothing Base uses, so the query stays small.
+    prisma.logEntry.findMany({
+      where: { OR: [{ weight: { not: null } }, { km: { not: null } }] },
+      select: { date: true, exerciseOrActivity: true, weight: true, km: true },
+    }),
   ])
 
-  const streak = computeStreakInfo(streakDateRows.map(row => row.date), now)
+  const streakDates = streakDateRows.map(row => row.date)
+  const streak = computeStreakInfo(streakDates, now)
+  const base = computeBaseFromLogs(baseLogs, streakDates, now)
 
   const planData = plan
     ? {
@@ -419,13 +577,10 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
     planRowCount: plan?.rows.length ?? 0,
   })
 
-  // Historic (pre-window) bests per exercise. Parenthetical suffixes are
-  // stripped before grouping so legacy names like 'Back Squat (Barbell)'
-  // collapse onto today's 'Back Squat'.
-  const relaxedName = (name: string) => normalizeExerciseName(name.replace(/\(.*?\)/g, ' '))
+  // Historic (pre-window) bests per exercise, grouped by relaxed name.
   const bestsByName = new Map<string, { display: string; bestKg: number | null; bestKm: number | null; dateYmd: string }>()
   for (const log of allTimeLogs) {
-    const key = relaxedName(log.exerciseOrActivity)
+    const key = relaxedExerciseName(log.exerciseOrActivity)
     if (!key) continue
     const existing = bestsByName.get(key)
     const kg = log.weight
@@ -489,6 +644,7 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
     priorWeeks,
     historicBests,
     weeklyVolume,
+    base,
     fingerprint,
   }
 }
@@ -588,6 +744,19 @@ export function buildCoachDigest(data: CoachData): string {
     out.push('')
   }
 
+  const base = data.base
+  out.push('## Base score')
+  out.push(
+    `Base ${base.score}/100, 7-day delta ${base.delta7 >= 0 ? '+' : ''}${base.delta7}. ` +
+      `Components (0-100): consistency ${base.components.consistency}, strength rebuilt ${
+        base.components.strength ?? 'n/a (no pre-break lift reference yet)'
+      }, engine ${base.components.engine}.`
+  )
+  out.push(
+    'Base is the app\'s headline metric. Cite it when it moved (|delta| >= 2) or sits at a telling level; leave it out when flat and unremarkable.'
+  )
+  out.push('')
+
   const streak = data.streak
   out.push(`## This week (starts ${data.weekStartYmd})`)
   out.push(
@@ -633,28 +802,49 @@ export function buildCoachDigest(data: CoachData): string {
 // Computed fallback (deterministic)
 // ---------------------------------------------------------------------------
 
-// Focus = the next unlogged planned session (today-or-later first, then missed
-// earlier days), or 'Plan your week' when there is no plan.
-function computeFocus(data: CoachData): string {
-  if (!data.plan || data.plan.rows.length === 0) return 'Plan your week'
+// Focus = 1-3 imperative actions ordered by leverage. First is ALWAYS the
+// next-session action: the next unlogged planned session (today-or-later
+// first, then missed earlier days), or planning the week when no plan exists.
+// A second item is added only when it is real (week goal one session away) —
+// never padded, and never a weekend prescription.
+function computeFocus(data: CoachData): string[] {
+  const focus: string[] = []
+  const streak = data.streak
+  const done = streak.sessionDays.length
+  const goal = streak.effectiveGoal
+  const isWeekend = data.todayName === 'Saturday' || data.todayName === 'Sunday'
 
-  const remaining = data.plan.rows.filter(row => !row.logged)
-  if (remaining.length === 0) return 'All planned sessions are logged - recover, then plan next week.'
-
-  const todayIdx = DAYS.indexOf(data.todayName)
-  const rank = (day: string): number => {
-    const idx = DAYS.indexOf(day)
-    if (idx === -1 || todayIdx === -1) return 99
-    return idx >= todayIdx ? idx - todayIdx : idx - todayIdx + 7
+  if (!data.plan || data.plan.rows.length === 0) {
+    focus.push('Plan your week - no plan saved yet.')
+  } else {
+    const remaining = data.plan.rows.filter(row => !row.logged)
+    if (remaining.length === 0) {
+      focus.push('All planned sessions are logged - recover, then plan next week.')
+    } else {
+      const todayIdx = DAYS.indexOf(data.todayName)
+      const rank = (day: string): number => {
+        const idx = DAYS.indexOf(day)
+        if (idx === -1 || todayIdx === -1) return 99
+        return idx >= todayIdx ? idx - todayIdx : idx - todayIdx + 7
+      }
+      const next = [...remaining].sort((a, b) => rank(a.day) - rank(b.day))[0]
+      const nextType = normalizeWorkoutType(next.type) ?? next.type
+      const names = remaining
+        .filter(row => row.day === next.day && (normalizeWorkoutType(row.type) ?? row.type) === nextType)
+        .map(row => row.exercise)
+      const nameText = names.length > 3 ? `${names.slice(0, 3).join(', ')}, ...` : names.join(', ')
+      const dayPhrase = next.day === data.todayName ? 'today' : `on ${next.day}`
+      focus.push(`Do the ${nextType} session ${dayPhrase}: ${nameText}.`)
+    }
   }
-  const next = [...remaining].sort((a, b) => rank(a.day) - rank(b.day))[0]
-  const nextType = normalizeWorkoutType(next.type) ?? next.type
-  const names = remaining
-    .filter(row => row.day === next.day && (normalizeWorkoutType(row.type) ?? row.type) === nextType)
-    .map(row => row.exercise)
-  const nameText = names.length > 3 ? `${names.slice(0, 3).join(', ')}, ...` : names.join(', ')
-  const dayPhrase = next.day === data.todayName ? 'today' : `on ${next.day}`
-  return `Do the ${nextType} session ${dayPhrase}: ${nameText}.`
+
+  // Second action only when the week is genuinely one session from made — and
+  // never on Sat/Sun (weekends are family time; a missed session is deleted).
+  if (done > 0 && goal - done === 1 && !isWeekend) {
+    focus.push(`Bank one more session day and the week is made - ${done} of ${goal} done.`)
+  }
+
+  return focus.slice(0, 3)
 }
 
 // Deterministic brief in the same terse voice the AI is prompted for. Always
@@ -785,7 +975,7 @@ const BriefSchema = z.object({
     )
     .min(2)
     .max(5),
-  focus: z.string(),
+  focus: z.array(z.string()).min(1).max(3),
 })
 
 const COACH_SYSTEM = [
@@ -819,7 +1009,8 @@ const COACH_SYSTEM = [
   "- Weekends are family time: NEVER prescribe weekend sessions or make-ups. A missed session is deleted, not owed. On Sat/Sun close the week honestly and point the focus at Monday.",
   '- lines: 2 to 5 entries, each tagged action, strength, running, or consistency. Cover topics that have data; skip ones with none.',
   '- headline: one line - the sharpest true thing about where his training stands.',
-  '- focus: ONE imperative sentence, the single highest-leverage thing to do next - and it must carry its why ("Repeat Thursday\'s weights Monday - the 122% load jump needs absorbing").',
+  '- focus: 1 to 3 imperative actions ORDERED by leverage, highest first, each carrying its why in the same sentence ("Repeat Thursday\'s weights Monday - the 122% load jump needs absorbing"). One action is fine - never pad to three.',
+  "- Base (the digest's 0-100 headline metric) may be referenced in the headline or lines when its movement says something real - it moved 2+ points, or sits at a telling level worth naming. NEVER cite Base when it is flat and unremarkable.",
 ].join('\n')
 
 const AI_TIMEOUT_MS = 20_000
@@ -849,7 +1040,7 @@ export async function aiBrief(data: CoachData): Promise<CoachBrief | null> {
     return {
       headline: parsed.headline,
       lines: parsed.lines.slice(0, 5),
-      focus: parsed.focus,
+      focus: parsed.focus.slice(0, 3),
       generatedAt: new Date().toISOString(),
       method: 'ai',
     }

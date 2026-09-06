@@ -21,9 +21,29 @@ import { WeekGoal } from './WeekGoal'
 interface CoachBrief {
   headline: string // one blunt line, the state of play
   lines: { topic: 'action' | 'strength' | 'running' | 'consistency'; text: string }[]
-  focus: string // THE one thing to work on now
+  focus: string[] // 1-3 imperative items to work on now
   generatedAt: string // ISO
   method: 'ai' | 'computed'
+}
+
+// Base — the app's named opinionated metric. Derived fresh server-side on
+// every GET/POST; never null in a successful response.
+interface BaseScore {
+  score: number // 0-100 rounded
+  delta7: number // score now minus score as of 7 days ago
+  components: {
+    consistency: number // 0-100
+    strength: number | null // null when no pre-break reference exists
+    engine: number // 0-100
+  }
+}
+
+// Legacy cached briefs may still carry focus as a plain string; normalize at
+// the fetch boundary so the rest of the component only sees string[].
+type CoachBriefWire = Omit<CoachBrief, 'focus'> & { focus: string | string[] }
+
+function normalizeBrief(raw: CoachBriefWire): CoachBrief {
+  return { ...raw, focus: Array.isArray(raw.focus) ? raw.focus : [raw.focus] }
 }
 
 const TOPIC_ICONS: Record<CoachBrief['lines'][number]['topic'], LucideIcon> = {
@@ -49,8 +69,30 @@ function relativeTime(iso: string): string {
   return `${days}d ago`
 }
 
+// One row of the Base tile's component breakdown: tiny label over a filled
+// bar. A null value (strength with no pre-break reference) renders the label
+// with an em-dash and leaves the track empty.
+function BaseComponentBar({ label, value }: { label: string; value: number | null }) {
+  return (
+    <div>
+      <div className="text-[10px] text-zinc-500 leading-tight">
+        {value == null ? `${label} —` : label}
+      </div>
+      <div className="h-1.5 rounded-full bg-zinc-800 mt-0.5">
+        {value != null && (
+          <div
+            className="h-1.5 rounded-full bg-emerald-500/70"
+            style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function CoachHome() {
   const [brief, setBrief] = useState<CoachBrief | null>(null)
+  const [base, setBase] = useState<BaseScore | null>(null)
   // True while the mount GET /api/coach is in flight.
   const [loadingInitial, setLoadingInitial] = useState(true)
   // True while a POST /api/coach (regenerate) is in flight.
@@ -73,8 +115,9 @@ export function CoachHome() {
     try {
       const res = await fetch('/api/coach', { method: 'POST' })
       if (!res.ok) throw new Error(`POST /api/coach ${res.status}`)
-      const data: { brief: CoachBrief } = await res.json()
-      setBrief(data.brief)
+      const data: { brief: CoachBriefWire; base: BaseScore } = await res.json()
+      setBrief(normalizeBrief(data.brief))
+      if (data.base) setBase(data.base)
     } catch (err) {
       console.error('Failed to regenerate coach brief:', err)
       setError(RETRY_MESSAGE)
@@ -94,8 +137,10 @@ export function CoachHome() {
       try {
         const res = await fetch('/api/coach')
         if (!res.ok) throw new Error(`GET /api/coach ${res.status}`)
-        const data: { brief: CoachBrief | null; stale: boolean } = await res.json()
-        if (data.brief) setBrief(data.brief)
+        const data: { brief: CoachBriefWire | null; stale: boolean; base: BaseScore } =
+          await res.json()
+        if (data.brief) setBrief(normalizeBrief(data.brief))
+        if (data.base) setBase(data.base)
         setLoadingInitial(false)
         if (data.stale || !data.brief) regenerate()
       } catch (err) {
@@ -129,8 +174,12 @@ export function CoachHome() {
   // Skeleton only while there's nothing cached to show and a request is out.
   const showSkeleton = !brief && !error && (loadingInitial || refreshing)
 
-  // Amber focus when the coach is flagging missed/skipped work.
-  const focusIsCaution = brief != null && /miss|skip/i.test(brief.focus)
+  // Amber focus when the coach is flagging missed/skipped work in any action.
+  const focusIsCaution = brief != null && brief.focus.some((f) => /miss|skip/i.test(f))
+
+  // Base tile: skeleton while a request that could deliver it is in flight;
+  // hidden entirely only if it never arrives.
+  const showBaseSkeleton = !base && (loadingInitial || refreshing)
 
   // Today CTA label from the week response.
   let todayLabel: string | null = null
@@ -177,6 +226,57 @@ export function CoachHome() {
 
       {error && <p className="text-xs text-amber-400 mb-2">{error}</p>}
 
+      {/* Base tile */}
+      {base ? (
+        <div className="bg-zinc-900 rounded-xl p-4 mb-3 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div
+              className="text-xs tracking-wide text-zinc-500 cursor-help"
+              title="Your comeback foundation: 60% showing up, 20% strength rebuilt, 20% engine"
+            >
+              BASE
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-4xl font-bold text-emerald-400 tabular-nums leading-none">
+                {base.score}
+              </span>
+              {base.delta7 > 0 ? (
+                <span className="text-xs tabular-nums text-emerald-400 bg-emerald-500/10 rounded-full px-2 py-0.5 whitespace-nowrap">
+                  ▲ +{base.delta7} this week
+                </span>
+              ) : base.delta7 < 0 ? (
+                <span className="text-xs tabular-nums text-amber-400 bg-amber-500/10 rounded-full px-2 py-0.5 whitespace-nowrap">
+                  ▼ {base.delta7} this week
+                </span>
+              ) : (
+                <span className="text-xs text-zinc-500 bg-zinc-800 rounded-full px-2 py-0.5 whitespace-nowrap">
+                  level
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="w-28 flex-shrink-0 space-y-1.5">
+            <BaseComponentBar label="Consistency" value={base.components.consistency} />
+            <BaseComponentBar label="Strength" value={base.components.strength} />
+            <BaseComponentBar label="Engine" value={base.components.engine} />
+          </div>
+        </div>
+      ) : showBaseSkeleton ? (
+        <div className="bg-zinc-900 rounded-xl p-4 mb-3">
+          <div className="animate-pulse flex items-center justify-between gap-4">
+            <div className="space-y-2">
+              <div className="h-3 w-10 bg-zinc-800 rounded" />
+              <div className="h-9 w-16 bg-zinc-800 rounded" />
+            </div>
+            <div className="w-28 flex-shrink-0 space-y-3">
+              <div className="h-1.5 bg-zinc-800 rounded-full" />
+              <div className="h-1.5 bg-zinc-800 rounded-full" />
+              <div className="h-1.5 bg-zinc-800 rounded-full" />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Brief card */}
       {brief ? (
         <div className="relative bg-zinc-900 rounded-xl p-4">
@@ -213,7 +313,22 @@ export function CoachHome() {
             >
               Focus
             </div>
-            <p className="text-white text-sm">{brief.focus}</p>
+            {brief.focus.length === 1 ? (
+              <p className="text-white text-sm">{brief.focus[0]}</p>
+            ) : (
+              <ol className="space-y-1.5">
+                {brief.focus.map((action, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="text-emerald-400 font-mono text-xs mt-0.5 flex-shrink-0">
+                      {i + 1}
+                    </span>
+                    <span className={`text-white text-sm ${i === 0 ? 'font-medium' : ''}`}>
+                      {action}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         </div>
       ) : showSkeleton ? (
