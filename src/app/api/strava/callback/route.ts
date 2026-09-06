@@ -10,14 +10,14 @@ export async function GET(request: NextRequest) {
   try {
     const code = new URL(request.url).searchParams.get('code')
     if (!code || !isStravaConfigured()) {
-      return NextResponse.redirect(`${origin}/?strava=error`)
+      return NextResponse.redirect(`${origin}/week?strava=error`)
     }
 
     const tokens = await exchangeCode(code)
     await storeTokens(tokens)
 
-    return NextResponse.redirect(`${origin}/?strava=connected`)
+    return NextResponse.redirect(`${origin}/week?strava=connected`)
   } catch {
-    return NextResponse.redirect(`${origin}/?strava=error`)
+    return NextResponse.redirect(`${origin}/week?strava=error`)
   }
 }

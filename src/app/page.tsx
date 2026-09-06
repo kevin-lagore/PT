@@ -1,5 +1,5 @@
-import { ThisWeek } from '@/components/ThisWeek'
+import { CoachHome } from '@/components/CoachHome'
 
 export default function Home() {
-  return <ThisWeek />
+  return <CoachHome />
 }

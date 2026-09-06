@@ -2,10 +2,11 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Calendar, ClipboardList, TrendingUp } from 'lucide-react'
+import { Calendar, ClipboardList, MessageSquareText, TrendingUp } from 'lucide-react'
 
 const navItems = [
-  { href: '/', label: 'This Week', icon: Calendar },
+  { href: '/', label: 'Coach', icon: MessageSquareText },
+  { href: '/week', label: 'This Week', icon: Calendar },
   { href: '/plans', label: 'Plans', icon: ClipboardList },
   { href: '/progress', label: 'Progress', icon: TrendingUp },
 ]
