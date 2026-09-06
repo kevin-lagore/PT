@@ -102,6 +102,11 @@ export interface CoachData {
   trends: LiftTrend[]
   streak: StreakResult
   priorWeeks: { weekStartYmd: string; sessionDays: number }[] // 2 full weeks, newest first
+  // All-time bests recorded BEFORE the digest window ('pre-break reference'):
+  // lets the brief place today's numbers against where the user used to be.
+  historicBests: { exercise: string; bestKg: number | null; bestKm: number | null; dateYmd: string }[]
+  // Gym sets / tonnage (sum reps x kg) / run km per week, current week first.
+  weeklyVolume: { weekStartYmd: string; gymSets: number; tonnageKg: number; runKm: number }[]
   fingerprint: string
 }
 
@@ -323,7 +328,7 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
   yearAgo.setDate(yearAgo.getDate() - 365)
   yearAgo.setHours(0, 0, 0, 0)
 
-  const [windowLogs, streakDateRows, plan, logCount, newestLog] = await Promise.all([
+  const [windowLogs, streakDateRows, plan, logCount, newestLog, allTimeLogs] = await Promise.all([
     prisma.logEntry.findMany({
       where: { date: { gte: windowStart } },
       select: {
@@ -361,6 +366,15 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
     }),
     prisma.logEntry.count(),
     prisma.logEntry.findFirst({ orderBy: { createdAt: 'desc' }, select: { id: true } }),
+    // Everything BEFORE the digest window with a load or distance attached —
+    // the pre-break reference the brief measures the comeback against.
+    prisma.logEntry.findMany({
+      where: {
+        date: { lt: windowStart },
+        OR: [{ weight: { not: null } }, { km: { not: null } }],
+      },
+      select: { date: true, exerciseOrActivity: true, weight: true, km: true },
+    }),
   ])
 
   const streak = computeStreakInfo(streakDateRows.map(row => row.date), now)
@@ -405,6 +419,65 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
     planRowCount: plan?.rows.length ?? 0,
   })
 
+  // Historic (pre-window) bests per exercise. Parenthetical suffixes are
+  // stripped before grouping so legacy names like 'Back Squat (Barbell)'
+  // collapse onto today's 'Back Squat'.
+  const relaxedName = (name: string) => normalizeExerciseName(name.replace(/\(.*?\)/g, ' '))
+  const bestsByName = new Map<string, { display: string; bestKg: number | null; bestKm: number | null; dateYmd: string }>()
+  for (const log of allTimeLogs) {
+    const key = relaxedName(log.exerciseOrActivity)
+    if (!key) continue
+    const existing = bestsByName.get(key)
+    const kg = log.weight
+    const km = log.km
+    if (!existing) {
+      bestsByName.set(key, {
+        display: log.exerciseOrActivity.replace(/\(.*?\)/g, '').trim(),
+        bestKg: kg,
+        bestKm: km,
+        dateYmd: formatDate(log.date),
+      })
+      continue
+    }
+    if (kg != null && (existing.bestKg == null || kg > existing.bestKg)) {
+      existing.bestKg = kg
+      existing.dateYmd = formatDate(log.date)
+    }
+    if (km != null && (existing.bestKm == null || km > existing.bestKm)) existing.bestKm = km
+  }
+  const historicBests = [...bestsByName.values()]
+    .filter(best => (best.bestKg != null && best.bestKg > 1) || best.bestKm != null)
+    .sort((a, b) => (b.bestKg ?? 0) - (a.bestKg ?? 0))
+    .map(best => ({ exercise: best.display, bestKg: best.bestKg, bestKm: best.bestKm, dateYmd: best.dateYmd }))
+
+  // Gym sets / tonnage / run km per week for the 3 weeks the window spans,
+  // current week first. Sessions already expand setsCompleted > 1.
+  const weekStartOfYmd = (ymd: string) => formatDate(getMonday(new Date(ymd + 'T00:00:00')))
+  const volumeByWeek = new Map<string, { gymSets: number; tonnageKg: number; runKm: number }>()
+  for (const session of sessions) {
+    const ws = weekStartOfYmd(session.dateYmd)
+    const bucket = volumeByWeek.get(ws) ?? { gymSets: 0, tonnageKg: 0, runKm: 0 }
+    for (const item of session.items) {
+      if (item.type === 'Gym') {
+        bucket.gymSets += item.sets.length
+        for (const set of item.sets) {
+          if (set.reps != null && set.weight != null) bucket.tonnageKg += set.reps * set.weight
+        }
+      } else if (item.type === 'Run' && item.km != null) {
+        bucket.runKm += item.km
+      }
+    }
+    volumeByWeek.set(ws, bucket)
+  }
+  const weeklyVolume = [...volumeByWeek.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([weekStartYmd, vol]) => ({
+      weekStartYmd,
+      gymSets: vol.gymSets,
+      tonnageKg: Math.round(vol.tonnageKg),
+      runKm: Math.round(vol.runKm * 10) / 10,
+    }))
+
   return {
     todayYmd,
     todayName: getDayOfWeek(now),
@@ -414,6 +487,8 @@ export async function gatherCoachData(now: Date = new Date()): Promise<CoachData
     trends,
     streak,
     priorWeeks,
+    historicBests,
+    weeklyVolume,
     fingerprint,
   }
 }
@@ -490,6 +565,28 @@ export function buildCoachDigest(data: CoachData): string {
     out.push(line)
   }
   out.push('')
+
+  if (data.historicBests.length > 0) {
+    out.push('## Pre-break reference - all-time bests from BEFORE this training block')
+    out.push('(Use these to place current numbers: how much of his old strength is back. Names may differ slightly from current exercises - connect them where obvious.)')
+    for (const best of data.historicBests) {
+      const bits: string[] = []
+      if (best.bestKg != null) bits.push(`${best.bestKg}kg`)
+      if (best.bestKm != null) bits.push(`${best.bestKm}km`)
+      out.push(`${best.exercise}: ${bits.join(', ')} (${best.dateYmd})`)
+    }
+    out.push('')
+  }
+
+  if (data.weeklyVolume.length > 0) {
+    out.push('## Weekly volume (current week first)')
+    for (const vol of data.weeklyVolume) {
+      out.push(
+        `Week of ${vol.weekStartYmd}: ${vol.gymSets} gym sets, ${vol.tonnageKg}kg total tonnage, ${vol.runKm}km run.`
+      )
+    }
+    out.push('')
+  }
 
   const streak = data.streak
   out.push(`## This week (starts ${data.weekStartYmd})`)
@@ -692,20 +789,37 @@ const BriefSchema = z.object({
 })
 
 const COACH_SYSTEM = [
-  "You are the user's personal trainer reviewing his training digest, writing today's short brief.",
-  'Voice: a direct coach who read the numbers before opening his mouth. Blunt, specific, zero waffle.',
+  "You are the user's personal trainer of several years, writing his short daily brief from the training digest.",
+  'He reads it every morning in ten seconds. It earns its place ONLY by telling him something he cannot see from glancing at his own log.',
+  '',
+  'What insight means here:',
+  '- Compare across weeks and against the pre-break reference: "bench 55kg is 92% of your January 60" beats "bench went up".',
+  '- Connect numbers to consequences: a 30%+ tonnage jump in a comeback week is an injury flag, name it as one.',
+  '- Spot what he has not noticed: a day that keeps slipping, a lift that stalled while its twin moved, runs quietly getting faster.',
+  '- Interpretation is mandatory: never state a fact without saying what it means or what to do about it.',
+  '',
+  'Example of the difference (do not copy the content, copy the altitude):',
+  '  meh:  "Squat moved 60 to 65kg. Hold there."',
+  '  good: "Squat 65kg two weeks in - 93% of your January best. The comeback is nearly priced in; do not rush the last 5kg."',
+  '',
+  'The sentence shape that earns its keep: named cause -> quantified effect vs HIS OWN baseline -> directive with a number.',
+  'Each line does a different JOB - what changed, why it matters, what it costs or buys, what to do. Never five metrics in a row.',
+  'Match the register to the day state (PR day, returning after a gap, ramp week, week already closed, quiet stretch). On a day with no real story, write two sharp lines - never manufacture insight to fill five.',
   '',
   'Hard rules:',
-  '- Every claim cites a real number from the digest: weights, paces, distances, session counts, streaks.',
-  '- Each line under 18 words. No emojis. No generic praise ("great job"). No hedging.',
-  '- If a lift is marked READY TO PROGRESS, name the next weight (+2.5kg upper body, +5kg squats/deadlifts/legs) - the digest precomputes it.',
-  '- Call out skipped patterns plainly ("You have skipped Gym B two weeks straight"). State facts, never cruelty.',
-  '- If the digest says the comeback ramp is active, weeks 1-2 back are SUPPOSED to be light. Do not push weight or volume; endorse the ramp.',
-  '- Never criticize interval or run/walk sessions for uneven pacing - the pace variability is the workout.',
-  "- Weekends are family time in this programme: NEVER prescribe weekend sessions or make-ups. A missed session is deleted, not owed. If it is Saturday or Sunday and the week fell short, close the week honestly ('three is a good week') and point the focus at Monday.",
-  '- lines: 2 to 5 entries, each tagged action, strength, running, or consistency. Cover every topic that has data; skip topics with none.',
-  '- headline: one blunt line - the state of play.',
-  '- focus: ONE imperative sentence naming the single highest-leverage thing to work on now.',
+  '- Every claim cites a real number from the digest. No emojis. No hedging. Praise only what the data proves and only when it is rare enough to mean something.',
+  '- Judge behaviour, never identity: "Thursday slipped twice" is coaching; "you are inconsistent" is not.',
+  '- Never expose internal metric names (paceCV, paceDrift, e1RM, tonnage field names) - translate: "even splits", "faded late", "estimated max", "total weight moved".',
+  '- Each line under 22 words. No two lines making the same point. No filler lines ("rest today", "week is done") unless they carry advice.',
+  '- Vary the shape day to day - do not open every headline with the session count.',
+  '- A dry, knowing edge is welcome; cheerleading is not.',
+  '- If a lift is marked READY TO PROGRESS, name the precomputed next weight.',
+  '- If the comeback ramp is active, weeks 1-2 back are SUPPOSED to be light: hold weights there, and frame restraint as the strategy.',
+  '- Never criticize interval or run/walk sessions for uneven pacing - the variability is the workout.',
+  "- Weekends are family time: NEVER prescribe weekend sessions or make-ups. A missed session is deleted, not owed. On Sat/Sun close the week honestly and point the focus at Monday.",
+  '- lines: 2 to 5 entries, each tagged action, strength, running, or consistency. Cover topics that have data; skip ones with none.',
+  '- headline: one line - the sharpest true thing about where his training stands.',
+  '- focus: ONE imperative sentence, the single highest-leverage thing to do next - and it must carry its why ("Repeat Thursday\'s weights Monday - the 122% load jump needs absorbing").',
 ].join('\n')
 
 const AI_TIMEOUT_MS = 20_000
@@ -721,7 +835,7 @@ export async function aiBrief(data: CoachData): Promise<CoachBrief | null> {
       {
         model: 'claude-opus-5',
         max_tokens: 16000,
-        output_config: { effort: 'medium', format: zodOutputFormat(BriefSchema) },
+        output_config: { effort: 'high', format: zodOutputFormat(BriefSchema) },
         system: COACH_SYSTEM,
         messages: [{ role: 'user', content: buildCoachDigest(data) }],
       },
